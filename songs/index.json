@@ -1,0 +1,32 @@
+[
+ {
+  "id": "koinu",
+  "title": "子犬のワルツ",
+  "composer": "ショパン",
+  "work": "ワルツ 変ニ長調 Op.64-1",
+  "level": "中級",
+  "measures": 141,
+  "notes": 1374,
+  "edition_fingers": 0
+ },
+ {
+  "id": "hisou2",
+  "title": "悲愴 第2楽章",
+  "composer": "ベートーヴェン",
+  "work": "ピアノソナタ第8番 ハ短調 Op.13 第2楽章",
+  "level": "中級",
+  "measures": 73,
+  "notes": 1629,
+  "edition_fingers": 0
+ },
+ {
+  "id": "kakumei",
+  "title": "革命のエチュード",
+  "composer": "ショパン",
+  "work": "練習曲 ハ短調 Op.10-12",
+  "level": "上級",
+  "measures": 84,
+  "notes": 2085,
+  "edition_fingers": 163
+ }
+]

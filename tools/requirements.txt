@@ -1,0 +1,2 @@
+verovio==6.3.0
+pianoplayer==3.0.2

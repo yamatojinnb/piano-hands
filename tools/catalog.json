@@ -1,0 +1,45 @@
+[
+ {
+  "id": "koinu",
+  "title": "子犬のワルツ",
+  "composer": "ショパン",
+  "work": "ワルツ 変ニ長調 Op.64-1",
+  "level": "中級",
+  "kern_repo": "pl-wnifc/humdrum-chopin-first-editions",
+  "kern_path": "kern/064-1a-BH-001.krn",
+  "source_name": "Fryderyk Chopin Institute「Chopin First Editions」Breitkopf & Härtel 初版",
+  "source_url": "https://github.com/pl-wnifc/humdrum-chopin-first-editions",
+  "license": "CC BY 4.0",
+  "tempo_text": ["とても速く、生き生きと", "Molto vivace"],
+  "speed": 0.35,
+  "move_secondary": true
+ },
+ {
+  "id": "hisou2",
+  "title": "悲愴 第2楽章",
+  "composer": "ベートーヴェン",
+  "work": "ピアノソナタ第8番 ハ短調 Op.13 第2楽章",
+  "level": "中級",
+  "kern_repo": "craigsapp/beethoven-piano-sonatas",
+  "kern_path": "kern/sonata08-2.krn",
+  "source_name": "Craig Stuart Sapp「Beethoven Piano Sonatas」Durand 1915年版（Paul Dukas校訂）",
+  "source_url": "https://github.com/craigsapp/beethoven-piano-sonatas",
+  "license": "楽曲・底本はパブリックドメイン（電子化データのライセンス表記なし）",
+  "tempo_text": ["ゆっくり、歌うように", "Adagio cantabile"],
+  "speed": 0.6
+ },
+ {
+  "id": "kakumei",
+  "title": "革命のエチュード",
+  "composer": "ショパン",
+  "work": "練習曲 ハ短調 Op.10-12",
+  "level": "上級",
+  "kern_repo": "pl-wnifc/humdrum-chopin-first-editions",
+  "kern_path": "kern/010_7-12-1-KI-012.krn",
+  "source_name": "Fryderyk Chopin Institute「Chopin First Editions」Kistner 初版",
+  "source_url": "https://github.com/pl-wnifc/humdrum-chopin-first-editions",
+  "license": "CC BY 4.0",
+  "tempo_text": ["炎のように速く", "Allegro con fuoco"],
+  "speed": 0.25
+ }
+]
