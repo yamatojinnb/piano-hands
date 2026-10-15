@@ -222,7 +222,13 @@ footer a{color:inherit}
 </div>
 
 <script>
-const REPO = 'yamatojinnb/piano-hands';
+// 保存先のリポジトリ名はページに書かず、持ち主の端末にだけ覚えさせる（?edit=owner/repo を一度開く）
+let REPO = '';
+try{
+  const q = new URLSearchParams(location.search).get('edit');
+  if(q && /^[\w.-]+\/[\w.-]+$/.test(q)){ localStorage.setItem('piano_repo', q); history.replaceState(null, '', location.pathname + location.hash); }
+  REPO = localStorage.getItem('piano_repo') || '';
+}catch(e){}
 const SAMPLE_KEYS = [33,36,39,42,45,48,51,54,57,60,63,66,69,72,75,78,81,84,87,90,93,96,99,102,105];
 const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 window.addEventListener('hashchange', () => location.reload());
@@ -767,7 +773,8 @@ function startPlayer(DATA, SERVER_EDITS){
     else box.innerHTML = ts.slice().sort((a,b) => (a.h===b.h ? b.p-a.p : (a.h==='R'?-1:1))).map(n => `<div class="edit-row"><span class="who"><i style="background:var(--${n.h==='L'?'lh':'rh'})"></i>${HN[n.h]} ${KANA[n.p%12]}${Math.floor(n.p/12)-1}</span>${[1,2,3,4,5].map(f => `<button type="button" class="fbtn${n.f===f ? (n.o===2 ? ' mine' : ' on') : ''}" data-i="${n.i}" data-f="${f}" aria-label="${f}の指">${f}</button>`).join('')}</div>`).join('');
     const c = Object.keys(localEdits).length;
     $('editCount').textContent = c ? `直した指：${c}か所（まだGitHubに保存していません）` : (Object.keys(SERVER_EDITS).length ? `GitHubに保存済みの修正：${Object.keys(SERVER_EDITS).length}か所` : '');
-    $('saveGh').disabled = !c; $('undoEdits').disabled = !c;
+    $('saveGh').disabled = !c || !REPO; $('undoEdits').disabled = !c;
+    $('saveGh').hidden = !REPO;
   }
   const byIndex = {}; notes.forEach(n => byIndex[n.i] = n);
   const origF = {}; notes.forEach(n => origF[n.i] = [n.f, n.o]);
@@ -783,6 +790,7 @@ function startPlayer(DATA, SERVER_EDITS){
     store.set('edits', localEdits); renderEdits(true);
   };
   $('saveGh').onclick = () => {
+    if(!REPO) return;
     const payload = JSON.stringify({song: DATA.id, edits: localEdits});
     const body = '指番号の修正です。このまま下の「Create」ボタンを押してください。\n\n```json\n' + payload + '\n```\n';
     const url = `https://github.com/${REPO}/issues/new?title=${encodeURIComponent('[運指] ' + DATA.id + ' ' + DATA.title)}&body=${encodeURIComponent(body)}`;

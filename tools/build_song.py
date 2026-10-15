@@ -21,6 +21,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, "tools", ".cache")
 CATALOG = json.load(open(os.path.join(ROOT, "tools", "catalog.json"), encoding="utf-8"))
 
+PLAYER = json.load(open(os.path.join(ROOT, "tools", "player.json"), encoding="utf-8"))
+WHITE_CM = 2.35                                    # width of one white key
+def reach_semitones(span_cm):
+    """Largest interval the hand can strike at once. Key centres n white keys apart are n*2.35 cm;
+    about 1.5 cm of the span is lost to the fingertip pads."""
+    steps = int((span_cm - 1.5) // WHITE_CM)       # white-key steps, 7 = octave
+    return {6: 11, 7: 12, 8: 14, 9: 16, 10: 17}.get(max(6, min(10, steps)), 14)
+REACH = reach_semitones(PLAYER["span_cm"])         # 22 cm -> 8 steps -> a 9th (14 semitones)
+HOLD_REACH = REACH + 2                             # holding one key and adding another stretches a bit further
+
 LAYOUT = [0, .5, 1, 1.5, 2, 3, 3.5, 4, 4.5, 5, 5.5, 6]
 K = 16.5 / 7
 def xpos(p): return 16.5 * (p // 12) + LAYOUT[p % 12] * K
@@ -134,7 +144,7 @@ def build(song):
         raw.append(dict(id=nid, base=re.sub(r"-rend\d+$", "", nid), t=t, off=off_time.get(nid, t + 200), p=p,
                         hand=staff, voice=voice, tie=("]" in tok or "_" in tok), grace="q" in tok,
                         trill="TT" in tok or bool(re.search(r"[Tt]", re.sub(r"[a-gA-G#\-n]", "", tok))),
-                        mi=measure_index(t), of=orig_finger(L, F, S, staff)))
+                        mi=measure_index(t), of=orig_finger(L, F, S, staff), L=L, F=F))
     raw.sort(key=lambda n: (n["t"], n["p"]))
     # Which HAND plays a note is not the same as which STAFF it is written on: inner voices are often
     # written on the other hand's staff (e.g. Pathetique II: the inner semiquavers sit on the lower staff
@@ -148,6 +158,7 @@ def build(song):
             continue
         notes.append(n)
 
+    marked = apply_hand_markings(lines, notes)
     hand_moves = separate_hands(notes, meas)
     # your own corrections act as fixed anchors
     fixp = os.path.join(ROOT, "songs", "fix", song["id"] + ".json")
@@ -183,6 +194,8 @@ def build(song):
               ensure_ascii=False, separators=(",", ":"))
     stats.update(quality(notes)); stats["engine"] = engine
     stats["hand_moves"] = hand_moves
+    stats["hand_marked"] = marked
+    stats["reach_semitones"] = REACH
     stats["hand_audit"] = hand_audit(notes, meas)
     stats.update(notes=len(notes), measures=len(meas), seconds=round(notes[-1]["t"] / 1000),
                  edition_fingers=sum(1 for n in notes if n.get("of") and not n.get("mine")),
@@ -359,6 +372,33 @@ def repair_same_finger(notes):
             if not changed: break
     return fixed
 
+HAND_MARKS = {
+    "R": r"^(m\.\s?d\.?|M\.\s?D\.?|r\.\s?H\.?|R\.\s?H\.?|m\.\s?dr\.?|main droite|mano destra|rechte Hand|right hand|D\.)$",
+    "L": r"^(m\.\s?g\.?|M\.\s?G\.?|m\.\s?s\.?|M\.\s?S\.?|l\.\s?H\.?|L\.\s?H\.?|main gauche|mano sinistra|linke Hand|left hand|G\.|S\.)$",
+}
+def apply_hand_markings(lines, notes):
+    """m.d. / m.g. (and r.H. / l.H., R.H. / L.H., m.s.) written in the score are the composer's or editor's
+    explicit instruction: the notes that follow the mark in that voice, up to the end of the bar
+    (or the opposite mark), are fixed to that hand and never moved by separate_hands."""
+    marks = []
+    for L, ln in enumerate(lines, 1):
+        if not ln.startswith("!") or ln.startswith("!!"): continue
+        for F, tok in enumerate(ln.split("\t"), 1):
+            for m in re.finditer(r"LO:TX:[^\t]*?t=([^:\t]+)", tok):
+                txt = m[1].strip()
+                for h, pat in HAND_MARKS.items():
+                    if re.match(pat, txt): marks.append((L, F, h))
+    bars = [i for i, ln in enumerate(lines, 1) if ln.startswith("=")]
+    out = []
+    for L, F, h in marks:
+        end = next((b for b in bars if b > L), len(lines) + 1)
+        nxt = [l2 for l2, f2, _ in marks if f2 == F and L < l2 < end]
+        if nxt: end = min(nxt)
+        hit = [n for n in notes if n.get("F") == F and L < n.get("L", 0) < end]
+        for n in hit: n["forced"] = h
+        if hit: out.append([L, "右手" if h == "R" else "左手", len(hit)])
+    return out
+
 def notes_staff_prepare(raw):
     for n in raw: n["staff"] = n["hand"]
     return []
@@ -372,7 +412,7 @@ def separate_hands(notes, meas):
     pick the hand for each unit that is physically playable (no hand striking more than a 9th at once,
     no hand holding+playing more than a 10th, hands not crossing), preferring the written staff and
     keeping the same unit in the same hand from measure to measure."""
-    for n in notes: n["staff"] = n.get("staff", n["hand"]); n["hand"] = n["staff"]
+    for n in notes: n["staff"] = n.get("staff", n["hand"]); n["hand"] = n.get("forced") or n["staff"]
     by_t = collections.defaultdict(list)
     for n in notes: by_t[n["t"]].append(n)
     ts = sorted(by_t)
@@ -397,7 +437,7 @@ def separate_hands(notes, meas):
     units = collections.defaultdict(list)
     tmp = collections.defaultdict(list)
     for n in notes:
-        if n["inner"]: tmp[(n["mi"], n["staff"])].append(n)
+        if n["inner"] and not n.get("forced"): tmp[(n["mi"], n["staff"])].append(n)
     for (mi, st), g in tmp.items():
         durs = sorted(m["off"] - m["t"] for m in g); med = durs[len(durs) // 2]
         for m in g: units[(mi, st + ("S" if m["off"] - m["t"] >= 2.5 * med else "M"))].append(m)
@@ -413,9 +453,9 @@ def separate_hands(notes, meas):
             snd = [m for m in notes if m["t"] <= t < max(m["off"], m["t"] + 1)]
             for h in "LR":
                 st = [n["p"] for n in g if n["hand"] == h]
-                if st and max(st) - min(st) > 14: cost += 60          # cannot strike more than a 9th
+                if st and max(st) - min(st) > REACH: cost += 60       # wider than this hand can strike
                 held = [m["p"] for m in snd if m["hand"] == h]
-                if held and st and max(held + st) - min(held + st) > 16: cost += 8
+                if held and st and max(held + st) - min(held + st) > HOLD_REACH: cost += 8
             L = [m["p"] for m in snd if m["hand"] == "L"]; R = [m["p"] for m in snd if m["hand"] == "R"]
             if L and R and max(L) > min(R) + 2: cost += 6             # hands crossing
         return cost
@@ -468,7 +508,7 @@ def hand_audit(notes, meas):
         if L and R and max(L) > min(R) + 2: out.append([m, "左手が右手より上"])
         for h, nm in (("L", "左手"), ("R", "右手")):
             st = [n["p"] for n in notes if n["t"] == t and n["hand"] == h]
-            if len(st) > 1 and max(st) - min(st) > 16: out.append([m, nm + "が同時に10度超"])
+            if len(st) > 1 and max(st) - min(st) > REACH: out.append([m, nm + "が手の届く幅を超えて同時に押す"])
     uniq = []
     for x in out:
         if x not in uniq: uniq.append(x)

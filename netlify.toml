@@ -1,0 +1,9 @@
+# 公開するのはアプリ本体・曲データ・ピアノの音だけ（ツールや説明書は含めない）
+[build]
+  command = "rm -rf _site && mkdir _site && cp -r index.html songs assets _site/"
+  publish = "_site"
+
+[[headers]]
+  for = "/songs/*"
+  [headers.values]
+    Cache-Control = "no-cache"
