@@ -32,10 +32,14 @@
 
 1. **自分で直した指**（`songs/fix/`）
 2. **楽譜に印刷された指**（初版楽譜などのデータに入っている場合。画面では金色）
-3. **自動計算**：運指計算ツール PianoPlayer で求めたあと、次のルールで整える
+3. **自動計算**：ピアニストの指使いから学習した統計モデル（Nakamura・Saito・Yoshii 2019 の2次HMM）で求めたあと、次のルールで整える
    - くり返し部分は1回目と同じ指にする
-   - 同じ形の小節が後で出てきたら同じ指にする
+   - 同じ形の小節（8音以上）が後で出てきたら同じ指にする
    - 和音で同じ指を2回使わない
+   - 隣の鍵盤へ速く動くのに同じ指が続く箇所は、隣の指に直す
+
+自動計算の精度はピアニストの指使いと比べて測っています（`docs/fingering-eval.md`）。ピアニスト同士の一致率 73.6% に対し、以前の PianoPlayer は約61%、今の統計モデルは約70%です。
+統計モデルのプログラムは作者が GitHub で公開しているものを、曲データを作るときにダウンロードして使います（このリポジトリには含めていません）。学習に使われたデータの利用条件は「非営利・学術目的」です。
 
 ## 指番号を直す（画面から）
 
@@ -60,4 +64,4 @@ python tools/build_song.py <曲ID>
 - ショパン：Fryderyk Chopin Institute「Chopin First Editions」（CC BY 4.0） https://github.com/pl-wnifc/humdrum-chopin-first-editions
 - ベートーヴェン：Craig Stuart Sapp「Beethoven Piano Sonatas」 https://github.com/craigsapp/beethoven-piano-sonatas
 - ピアノの音：Salamander Grand Piano（Alexander Holm、CC BY 3.0）、npm パッケージ @audio-samples/piano-mp3-velocity8 を短く切って使用
-- 自動運指：PianoPlayer（Marco Musy） https://github.com/marcomusy/pianoplayer
+- 自動運指：Eita Nakamura, Yasuyuki Saito, Kazuyoshi Yoshii, "Statistical Learning and Estimation of Piano Fingering", Information Sciences 517 (2020)。プログラム https://github.com/statpianofingering/statpianofingering.github.io （予備として PianoPlayer https://github.com/marcomusy/pianoplayer ）

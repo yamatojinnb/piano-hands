@@ -6,7 +6,9 @@ usage:  python tools/build_song.py <song-id> [<song-id> ...]   (ids from tools/c
 Fingering priority (highest first):
   1. your own corrections   songs/fix/<id>.json
   2. fingerings printed in the edition (**fing spines)
-  3. automatic: PianoPlayer search, then cleanup rules (repeats, chords)
+  3. automatic: Nakamura et al. 2nd-order HMM (trained on human fingerings; ~70% agreement
+     with pianists vs ~61% for PianoPlayer in our test), then cleanup rules (repeats, chords).
+     If the HMM can't be built, PianoPlayer is used instead.
 """
 import json, re, sys, os, subprocess, collections, logging, statistics
 
@@ -154,9 +156,17 @@ def build(song):
         k = f'{n["t"]}:{n["p"]}:{n["hand"]}'
         if k in fixes: n["of"] = int(fixes[k]); n["mine"] = 1
 
-    for side, h in (("right", "R"), ("left", "L")):
-        finger_hand([n for n in notes if n["hand"] == h], side)
+    engine = "hmm2"
+    try:
+        hmm_fingering(notes)
+    except Exception as e:
+        print("  HMM unavailable, falling back to PianoPlayer:", e, flush=True); engine = "pianoplayer"
+        for side, h in (("right", "R"), ("left", "L")):
+            finger_hand([n for n in notes if n["hand"] == h], side)
     stats = cleanup(notes, meas)
+    stats["same_finger_repaired"] = repair_same_finger(notes)
+    if engine == "hmm2":
+        for h in "LR": set_poses([n for n in notes if n["hand"] == h], h)
 
     marks = extract_marks(song, lines, tm)
     out = dict(
@@ -171,12 +181,69 @@ def build(song):
     )
     json.dump(out, open(os.path.join(ROOT, "songs", song["id"] + ".json"), "w", encoding="utf-8"),
               ensure_ascii=False, separators=(",", ":"))
-    stats.update(quality(notes))
+    stats.update(quality(notes)); stats["engine"] = engine
     stats.update(notes=len(notes), measures=len(meas), seconds=round(notes[-1]["t"] / 1000),
                  edition_fingers=sum(1 for n in notes if n.get("of") and not n.get("mine")),
                  my_fingers=sum(1 for n in notes if n.get("mine")))
     return stats
 
+
+# ---------------------------------------------------------------- HMM (Nakamura, Saito, Yoshii 2019)
+HMM_REPO = "statpianofingering/statpianofingering.github.io"
+def hmm_binary():
+    """Download the authors' published source (not redistributed here), compile the 2nd-order HMM once."""
+    import zipfile
+    base = os.path.join(CACHE, "nakamura")
+    exe = os.path.join(base, "SourceCode", "Binary", "FingeringHMM2_Run")
+    if os.path.exists(exe): return exe, os.path.join(base, "SourceCode", "Code", "param_FHMM2.txt")
+    repo = os.path.join(CACHE, "statpianofingering")
+    if not os.path.isdir(repo):
+        os.makedirs(CACHE, exist_ok=True)
+        subprocess.run(["git", "clone", "-q", "--depth", "1", "--filter=blob:none", "--no-checkout",
+                        f"https://github.com/{HMM_REPO}", repo], check=True)
+        subprocess.run(["git", "-C", repo, "checkout", "HEAD", "--", "data/SourceCode_v190921.zip"], check=True)
+    zipfile.ZipFile(os.path.join(repo, "data", "SourceCode_v190921.zip")).extractall(base)
+    os.makedirs(os.path.dirname(exe), exist_ok=True)
+    subprocess.run(["g++", "-O2", os.path.join(base, "SourceCode", "Code", "FingeringHMM2_Run_v181125.cpp"), "-o", exe], check=True)
+    return exe, os.path.join(base, "SourceCode", "Code", "param_FHMM2.txt")
+
+PNAME = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "G#", "A", "Bb", "B"]
+def hmm_fingering(notes):
+    import tempfile
+    exe, param = hmm_binary()
+    seq = sorted(notes, key=lambda n: (n["t"], 0 if n["hand"] == "R" else 1, n["p"]))
+    d = tempfile.mkdtemp(dir=CACHE)
+    inp, outp = os.path.join(d, "in.txt"), os.path.join(d, "out.txt")
+    with open(inp, "w") as fh:
+        fh.write("//Version: PianoFingering_v170101\n")
+        for k, n in enumerate(seq):
+            ch = 0 if n["hand"] == "R" else 1
+            fh.write(f"{k}\t{n['t']/1000:.4f}\t{max(n['off'], n['t']+30)/1000:.4f}\t{PNAME[n['p']%12]}{n['p']//12-1}\t64\t80\t{ch}\t{1 if ch == 0 else -1}\n")
+    subprocess.run([exe, param, inp, outp, "0.556", "0.407", "0.474", "-5"], check=True, capture_output=True)
+    out = [l.split() for l in open(outp) if l.strip() and not l.startswith("//")]
+    assert len(out) == len(seq), (len(out), len(seq))
+    for n, c in zip(seq, out):
+        f = abs(int(c[7].split("_")[0]))
+        n["f"] = n["of"] if n.get("of") else (f if 1 <= f <= 5 else 3)
+    for h in "LR": set_poses([n for n in notes if n["hand"] == h], h)
+
+def set_poses(hnotes, h):
+    """Where each finger hovers, derived from the fingering: pressed fingers sit on their keys,
+    the others keep a relaxed spacing next to the nearest pressed finger."""
+    sgn = 1 if h == "R" else -1
+    SP = [0, 1.25, 1.0, 1.0, 0.95]          # white-key distance from finger j to j+1 (index 1..4 used)
+    groups = collections.defaultdict(list)
+    for n in hnotes: groups[n["t"]].append(n)
+    for t in sorted(groups):
+        pressed = {n["f"]: xpos(n["p"]) / K for n in groups[t]}
+        pos = [None] * 5
+        for f, u in pressed.items(): pos[f - 1] = u
+        for j in range(5):
+            if pos[j] is not None: continue
+            k = min(pressed, key=lambda f: abs(f - 1 - j)) - 1
+            off = sum(SP[i] for i in range(min(j, k) + 1, max(j, k) + 1))
+            pos[j] = pressed[k + 1] + sgn * (off if j > k else -off)
+        for n in groups[t]: n["pos"] = [round(x, 2) for x in pos]
 
 _orig_opt = Hand.optimize_seq
 def _opt_lookahead(self, nseq, istart):
@@ -266,6 +333,30 @@ def cleanup(notes, meas):
     return dict(st)
 
 
+def repair_same_finger(notes):
+    """Fast moves to a different key with the same finger are unplayable legato. This happens mostly
+    where a printed finger was dropped into the HMM result. Move the free note to the neighbouring
+    finger in the direction of travel."""
+    fixed = 0
+    for h in "LR":
+        seq = [n for n in notes if n["hand"] == h and not n["grace"]]
+        onset = collections.Counter(n["t"] for n in seq)
+        seq = [n for n in seq if onset[n["t"]] == 1]            # single notes only; chords handled elsewhere
+        for _ in range(3):
+            changed = False
+            for i in range(1, len(seq)):
+                a, b = seq[i - 1], seq[i]
+                if a["f"] != b["f"] or a["p"] == b["p"] or abs(a["p"] - b["p"]) > 4 or b["t"] - a["t"] >= 250: continue
+                for tgt, ref, nxt in ((b, a, seq[i + 1] if i + 1 < len(seq) else None), (a, b, seq[i - 2] if i >= 2 else None)):
+                    if tgt.get("of"): continue
+                    up = (tgt["p"] > ref["p"]) == (tgt is b)
+                    step = 1 if (up == (h == "R")) else -1
+                    nf = ref["f"] + step
+                    if 1 <= nf <= 5 and not (nxt and nxt["f"] == nf and nxt["p"] != tgt["p"]):
+                        tgt["f"] = nf; fixed += 1; changed = True; break
+            if not changed: break
+    return fixed
+
 def quality(notes):
     """Simple physical checks a teacher would flag."""
     q = collections.Counter()
@@ -274,7 +365,7 @@ def quality(notes):
         for a, b in zip(seq, seq[1:]):
             if b["t"] == a["t"]: continue
             dt = b["t"] - a["t"]
-            if a["f"] == b["f"] and a["p"] != b["p"] and dt < 250: q["same_finger_jump"] += 1
+            if a["f"] == b["f"] and a["p"] != b["p"] and abs(a["p"] - b["p"]) <= 4 and dt < 250: q["same_finger_step"] += 1
             if b["f"] == 1 and is_black(b["p"]) and dt < 250 and not is_black(a["p"]): q["thumb_on_black_fast"] += 1
             up = b["p"] > a["p"] if h == "R" else b["p"] < a["p"]
             if up and b["f"] < a["f"] and b["f"] != 1 and a["f"] != 1: q["odd_crossing"] += 1
