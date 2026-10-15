@@ -36,5 +36,17 @@
   "seconds": 125,
   "edition_fingers": 163,
   "my_fingers": 0
+ },
+ "gekkou1": {
+  "phrase_fixed": 1,
+  "chord_fixed": 13,
+  "same_finger_repaired": 0,
+  "check_odd_crossing": 1,
+  "engine": "hmm2",
+  "notes": 1169,
+  "measures": 69,
+  "seconds": 302,
+  "edition_fingers": 0,
+  "my_fingers": 0
  }
 }
