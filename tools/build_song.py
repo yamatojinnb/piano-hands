@@ -136,10 +136,9 @@ def build(song):
                         trill="TT" in tok or bool(re.search(r"[Tt]", re.sub(r"[a-gA-G#\-n]", "", tok))),
                         mi=measure_index(t), of=orig_finger(L, F, S, staff)))
     raw.sort(key=lambda n: (n["t"], n["p"]))
-    if song.get("move_secondary"):
-        lh_on = {n["t"] for n in raw if n["hand"] == "L"}
-        for n in raw:
-            if n["hand"] == "R" and n["voice"] > 0 and n["t"] not in lh_on: n["hand"] = "L"
+    # Which HAND plays a note is not the same as which STAFF it is written on: inner voices are often
+    # written on the other hand's staff (e.g. Pathetique II: the inner semiquavers sit on the lower staff
+    # but are played by the right hand - Czerny: "without exception"). separate_hands() decides it.
     notes = []
     for n in raw:
         if n["tie"]:
@@ -149,6 +148,7 @@ def build(song):
             continue
         notes.append(n)
 
+    hand_moves = separate_hands(notes, meas)
     # your own corrections act as fixed anchors
     fixp = os.path.join(ROOT, "songs", "fix", song["id"] + ".json")
     fixes = json.load(open(fixp, encoding="utf-8")).get("edits", {}) if os.path.exists(fixp) else {}
@@ -182,6 +182,8 @@ def build(song):
     json.dump(out, open(os.path.join(ROOT, "songs", song["id"] + ".json"), "w", encoding="utf-8"),
               ensure_ascii=False, separators=(",", ":"))
     stats.update(quality(notes)); stats["engine"] = engine
+    stats["hand_moves"] = hand_moves
+    stats["hand_audit"] = hand_audit(notes, meas)
     stats.update(notes=len(notes), measures=len(meas), seconds=round(notes[-1]["t"] / 1000),
                  edition_fingers=sum(1 for n in notes if n.get("of") and not n.get("mine")),
                  my_fingers=sum(1 for n in notes if n.get("mine")))
@@ -356,6 +358,121 @@ def repair_same_finger(notes):
                         tgt["f"] = nf; fixed += 1; changed = True; break
             if not changed: break
     return fixed
+
+def notes_staff_prepare(raw):
+    for n in raw: n["staff"] = n["hand"]
+    return []
+
+def separate_hands(notes, meas):
+    """Decide which hand plays each note.
+
+    Outer voices stay with their staff: the lowest line of the lower staff is the left hand, the top
+    line of the upper staff is the right hand. Inner notes (>= a 5th inside the outer voice of the same
+    staff, sounding at the same time) form a movable unit per staff and measure. For every measure we
+    pick the hand for each unit that is physically playable (no hand striking more than a 9th at once,
+    no hand holding+playing more than a 10th, hands not crossing), preferring the written staff and
+    keeping the same unit in the same hand from measure to measure."""
+    for n in notes: n["staff"] = n.get("staff", n["hand"]); n["hand"] = n["staff"]
+    by_t = collections.defaultdict(list)
+    for n in notes: by_t[n["t"]].append(n)
+    ts = sorted(by_t)
+    # role: outer / inner
+    for t in ts:
+        for st in "LR":
+            # outer voice: what sounds now, or arrives within a quarter of a second (a bass note entering
+            # just after a chord still defines what is "inside")
+            snd = [m for m in notes if m["staff"] == st and (m["t"] <= t < max(m["off"], m["t"] + 1)
+                   or (st == "L" and t < m["t"] <= t + 260))]          # look ahead only for an entering bass
+            if not snd: continue
+            outer = min(snd, key=lambda m: m["p"]) if st == "L" else max(snd, key=lambda m: m["p"])
+            for n in by_t[t]:
+                if n["staff"] != st: continue
+                far = (n["p"] - outer["p"] if st == "L" else outer["p"] - n["p"]) >= 7
+                # struck together with the outer note and held as long = part of the same chord (e.g. bass octave)
+                same_chord = (n["t"] == outer["t"] and abs((n["off"] - n["t"]) - (outer["off"] - outer["t"])) < 30
+                              and abs(n["p"] - outer["p"]) <= 12)
+                n["inner"] = far and not same_chord
+    for n in notes: n.setdefault("inner", False)
+    # units: (measure, staff, kind) - held inner notes and moving inner notes can belong to different hands
+    units = collections.defaultdict(list)
+    tmp = collections.defaultdict(list)
+    for n in notes:
+        if n["inner"]: tmp[(n["mi"], n["staff"])].append(n)
+    for (mi, st), g in tmp.items():
+        durs = sorted(m["off"] - m["t"] for m in g); med = durs[len(durs) // 2]
+        for m in g: units[(mi, st + ("S" if m["off"] - m["t"] >= 2.5 * med else "M"))].append(m)
+    mis = sorted({n["mi"] for n in notes})
+    notes_in = collections.defaultdict(list)
+    for n in notes: notes_in[n["mi"]].append(n)
+
+    def violations(mi):
+        cost = 0
+        group = collections.defaultdict(list)
+        for n in notes_in[mi]: group[n["t"]].append(n)
+        for t, g in group.items():
+            snd = [m for m in notes if m["t"] <= t < max(m["off"], m["t"] + 1)]
+            for h in "LR":
+                st = [n["p"] for n in g if n["hand"] == h]
+                if st and max(st) - min(st) > 14: cost += 60          # cannot strike more than a 9th
+                held = [m["p"] for m in snd if m["hand"] == h]
+                if held and st and max(held + st) - min(held + st) > 16: cost += 8
+            L = [m["p"] for m in snd if m["hand"] == "L"]; R = [m["p"] for m in snd if m["hand"] == "R"]
+            if L and R and max(L) > min(R) + 2: cost += 6             # hands crossing
+        return cost
+
+    MISMATCH, SWITCH = 3, 8
+    prev_best = {(): (0, None, {})}                                # assignment tuple -> (cost, back, map)
+    trail = []
+    for mi in mis:
+        keys = [k for k in ("LM", "LS", "RM", "RS") if (mi, k) in units]
+        opts = []
+        for mask in range(1 << len(keys)):
+            asg = {k: ("R" if k[0] == "L" else "L") if mask >> j & 1 else k[0] for j, k in enumerate(keys)}
+            for st, h in asg.items():
+                for n in units[(mi, st)]: n["hand"] = h
+            local = violations(mi) + MISMATCH * sum(1 for st, h in asg.items() if h != st[0])
+            for st in asg:
+                for n in units[(mi, st)]: n["hand"] = st[0]
+            opts.append((asg, local))
+        cur = {}
+        for asg, local in opts:
+            best = None
+            for pk, (pc, _, pmap) in prev_best.items():
+                sw = sum(SWITCH for st, h in asg.items() if st in pmap and pmap[st] != h)
+                c = pc + local + sw
+                if best is None or c < best[0]: best = (c, pk)
+            merged = dict(prev_best[best[1]][2]); merged.update(asg)
+            key = tuple(sorted(asg.items()))
+            if key not in cur or best[0] < cur[key][0]: cur[key] = (best[0], best[1], merged)
+        trail.append((mi, cur, keys)); prev_best = cur
+    # backtrack
+    moves = []
+    k = min(prev_best, key=lambda x: prev_best[x][0])
+    for mi, cur, keys in reversed(trail):
+        asg = dict(k)
+        for st, h in asg.items():
+            for n in units[(mi, st)]: n["hand"] = h
+            if h != st[0]: moves.append([meas[mi][1], ("下の段" if st[0] == "L" else "上の段") + "の内声を" + ("右手" if h == "R" else "左手") + "に"])
+        k = cur[k][1]
+    return sorted(moves, key=lambda x: x[0])
+
+def hand_audit(notes, meas):
+    """Places a person should look at: left hand sounding above the right hand, or one hand striking
+    more than a 10th at once. Reported only."""
+    out = []
+    ons = sorted({n["t"] for n in notes})
+    for t in ons:
+        snd = [n for n in notes if n["t"] <= t < max(n["off"], n["t"] + 1)]
+        L = [n["p"] for n in snd if n["hand"] == "L"]; R = [n["p"] for n in snd if n["hand"] == "R"]
+        m = meas[next(n["mi"] for n in notes if n["t"] == t)][1]
+        if L and R and max(L) > min(R) + 2: out.append([m, "左手が右手より上"])
+        for h, nm in (("L", "左手"), ("R", "右手")):
+            st = [n["p"] for n in notes if n["t"] == t and n["hand"] == h]
+            if len(st) > 1 and max(st) - min(st) > 16: out.append([m, nm + "が同時に10度超"])
+    uniq = []
+    for x in out:
+        if x not in uniq: uniq.append(x)
+    return uniq
 
 def quality(notes):
     """Simple physical checks a teacher would flag."""
