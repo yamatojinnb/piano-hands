@@ -178,6 +178,23 @@ def build(song):
     return stats
 
 
+_orig_opt = Hand.optimize_seq
+def _opt_lookahead(self, nseq, istart):
+    """Let printed/own fingers inside the 9-note window constrain the search (not just their own note).
+    Measured on human fingerings (PIG): roughly doubles the gain from anchors."""
+    fixed = [self._anchor_of.get(id(n), 0) for n in nseq]
+    if not any(fixed[1:]): return _orig_opt(self, nseq, istart)
+    orig_skip = self.skip
+    def skip(fa, fb, na, nb, hf, lr, level):
+        f = fixed[level - 1] if level - 1 < len(fixed) else 0
+        if f and fb != f: return True
+        return orig_skip(fa, fb, na, nb, hf, lr, level)
+    self.skip = skip
+    try: out, v = _orig_opt(self, nseq, istart)
+    finally: self.skip = orig_skip
+    if v >= 1e10: out, v = _orig_opt(self, nseq, istart)
+    return out, v
+
 def finger_hand(hnotes, side):
     seq, groups = [], collections.defaultdict(list)
     for n in hnotes: groups[n["t"]].append(n)
@@ -194,7 +211,11 @@ def finger_hand(hnotes, side):
     if len(seq) < 2:
         for a, n in seq: n["f"] = n.get("of") or 3; n["pos"] = [xpos(n["p"]) / K + d for d in (-2, -1, 0, 1, 2)]
         return
-    h = Hand(noteseq=[a for a, _ in seq], side=side, size="M"); h.verbose = False; h.generate()
+    h = Hand(noteseq=[a for a, _ in seq], side=side, size="M"); h.verbose = False
+    h.autodepth = False; h.depth = 9          # fixed full depth: +0.9pt agreement with pianists in our test
+    h._anchor_of = {id(a): int(a.fingering) for a, _ in seq if a.fingering}
+    if h._anchor_of: h.optimize_seq = _opt_lookahead.__get__(h, Hand)
+    h.generate()
     sign = -1 if side == "left" else 1
     for (a, n), fpos in zip(seq, h.fingerseq):
         pos = [sign * x / K for x in fpos[1:]]
@@ -226,7 +247,7 @@ def cleanup(notes, meas):
     seen = {}
     for (h, mi) in sorted(by, key=lambda k: k[1]):
         g = sorted(by[(h, mi)], key=lambda n: (n["t"], n["p"]))
-        if len(g) < 3: continue
+        if len(g) < 8: continue          # short patterns: copying hurt accuracy in our test
         t0 = meas[mi][0]
         sig = (h, tuple((round((n["t"] - t0) / 10), n["p"]) for n in g))
         if sig in seen:

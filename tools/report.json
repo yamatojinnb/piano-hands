@@ -1,10 +1,9 @@
 {
  "koinu": {
   "repeat_fixed": 6,
-  "phrase_fixed": 24,
   "chord_fixed": 1,
-  "check_same_finger_jump": 6,
   "check_thumb_on_black_fast": 3,
+  "check_same_finger_jump": 1,
   "notes": 1374,
   "measures": 141,
   "seconds": 153,
@@ -12,8 +11,8 @@
   "my_fingers": 0
  },
  "hisou2": {
-  "phrase_fixed": 5,
-  "chord_fixed": 31,
+  "phrase_fixed": 23,
+  "chord_fixed": 32,
   "check_same_finger_jump": 1,
   "check_thumb_on_black_fast": 3,
   "check_odd_crossing": 2,
@@ -25,9 +24,9 @@
  },
  "kakumei": {
   "phrase_fixed": 72,
-  "chord_fixed": 71,
-  "check_same_finger_jump": 5,
-  "check_thumb_on_black_fast": 27,
+  "chord_fixed": 64,
+  "check_same_finger_jump": 4,
+  "check_thumb_on_black_fast": 26,
   "check_odd_crossing": 2,
   "notes": 2085,
   "measures": 84,
