@@ -229,7 +229,6 @@ try{
   if(q && /^[\w.-]+\/[\w.-]+$/.test(q)){ localStorage.setItem('piano_repo', q); history.replaceState(null, '', location.pathname + location.hash); }
   REPO = localStorage.getItem('piano_repo') || '';
 }catch(e){}
-const SAMPLE_KEYS = [33,36,39,42,45,48,51,54,57,60,63,66,69,72,75,78,81,84,87,90,93,96,99,102,105];
 const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 window.addEventListener('hashchange', () => location.reload());
 (async () => {
@@ -335,44 +334,88 @@ function startPlayer(DATA, SERVER_EDITS){
 
   // ---------- audio ----------
   let ac = null, master = null;
+  // ---------- piano sound ----------
+  // Salamander Grand Piano: 4 loudness layers (recorded every 3 semitones) + key-release noises,
+  // sustain pedal (from the score, or following the bass when the score has no pedal marks) and room reverb.
+  const LAYERS = ['v1','v2','v3','v4'];
+  const KEYS = []; for(let k=21; k<=108; k+=3) KEYS.push(k);
+  const bufs = {v1:{}, v2:{}, v3:{}, v4:{}, rel:{}};
+  let loading = false;
+  const nearestKey = p => KEYS.reduce((a,k) => Math.abs(k-p) < Math.abs(a-p) ? k : a, KEYS[0]);
+  function makeIR(sec){
+    const len = Math.round(ac.sampleRate*sec), ir = ac.createBuffer(2, len, ac.sampleRate);
+    for(let c=0;c<2;c++){ const d = ir.getChannelData(c); for(let i=0;i<len;i++){ const t = i/len; d[i] = (Math.random()*2-1) * Math.pow(1-t, 3.2) * (i < ac.sampleRate*0.012 ? i/(ac.sampleRate*0.012) : 1); } }
+    return ir;
+  }
   function ensureAudio(){
     if(ac) return;
     try{
       ac = new (window.AudioContext||window.webkitAudioContext)();
       try{ if(navigator.audioSession) navigator.audioSession.type = 'playback'; }catch(e){}  // iPhone: play even in silent mode
-      master = ac.createGain(); master.gain.value = .55;
+      const comp = ac.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 3; comp.connect(ac.destination);
+      master = ac.createGain(); master.gain.value = .7; master.connect(comp);
+      const rev = ac.createConvolver(); rev.buffer = makeIR(2.2);
+      const wet = ac.createGain(); wet.gain.value = .22; master.connect(rev); rev.connect(wet); wet.connect(comp);
       setTimeout(loadSamples, 0);
-      const comp = ac.createDynamicsCompressor(); master.connect(comp); comp.connect(ac.destination);
     }catch(e){ ac = null; }
   }
-  // real piano samples (Salamander Grand Piano), decoded once
-  const buffers = {}; let sampleKeys = [], loading = false;
-  function loadSamples(){
+  async function loadSamples(){
     if(loading || !ac) return; loading = true;
-    const keys = SAMPLE_KEYS.map(String); let done = 0;
-    $('soundState').textContent = 'ピアノの音を準備中…';
-    keys.forEach(async k => {
-      let arr;
-      try{ arr = new Uint8Array(await (await fetch(`assets/piano/${k}.mp3`)).arrayBuffer()); }catch(e){ arr = null; }
-      const ok = b => { buffers[k] = b; sampleKeys = Object.keys(buffers).map(Number).sort((a,b)=>a-b); if(++done===keys.length) $('soundState').textContent = 'ピアノの音で鳴ります'; };
-      const fail = () => { if(++done===keys.length) $('soundState').textContent = sampleKeys.length ? 'ピアノの音で鳴ります' : '簡易音で鳴ります'; };
-      if(!arr){ fail(); return; }
-      try{ const pr = ac.decodeAudioData(arr.buffer, ok, fail); if(pr && pr.catch) pr.catch(()=>{}); }catch(e){ fail(); }
-    });
+    const need = [...new Set(notes.map(n => nearestKey(n.p)))];
+    const relNeed = [...new Set(notes.map(n => Math.max(21, Math.min(108, n.p))))];
+    // middle layer first so sound is available quickly, then the others
+    const jobs = [];
+    for(const L of ['v2','v3','v1','v4']) for(const k of need) jobs.push([L, k]);
+    for(const p of relNeed) jobs.push(['rel', p]);
+    let done = 0;
+    const total = jobs.length;
+    const st2 = () => $('soundState').textContent = done < total ? `ピアノの音を準備中… ${Math.round(done/total*100)}%` : 'ピアノの音で鳴ります';
+    const w2 = async () => { while(jobs.length){ const [L,k] = jobs.shift(); try{ const arr = await (await fetch(`assets/piano/${L}/${k}.mp3`)).arrayBuffer(); bufs[L][k] = await new Promise((ok, ng) => { const pr = ac.decodeAudioData(arr, ok, ng); if(pr && pr.catch) pr.catch(ng); }); }catch(e){} done++; if(done % 8 === 0 || done === total) st2(); } };
+    await Promise.all([w2(), w2(), w2(), w2(), w2(), w2()]);
+    st2();
   }
-  function tone(p, durSec, vel){
-    if(!ac || !$('sound').checked) return;
-    if(sampleKeys.length){
-      let s = sampleKeys[0]; for(const k of sampleKeys) if(Math.abs(k-p) < Math.abs(s-p)) s = k;
-      const now = ac.currentTime, src = ac.createBufferSource(), g = ac.createGain();
-      src.buffer = buffers[s]; src.playbackRate.value = Math.pow(2, (p-s)/12);
-      const hold = Math.min(2.7, Math.max(.18, durSec));
-      g.gain.setValueAtTime(.95*vel, now);
-      g.gain.setValueAtTime(.95*vel, now+hold);
-      g.gain.exponentialRampToValueAtTime(.001, now+hold+.35);
-      src.connect(g); g.connect(master); src.start(now); src.stop(now+hold+.4);
-      return;
+  // when each note's sound stops: at its written end, or later while the pedal is down
+  const PED = (MARKS.pedal || []);
+  const bassChanges = [];
+  { const lh = notes.filter(n => n.h==='L').sort((a,b) => a.t-b.t || a.p-b.p); let last = -1;
+    for(const n of lh){ if(n.t === last) continue; const lower = lh.some(m => m !== n && m.t < n.t && m.t + m.d > n.t && m.p < n.p); if(!lower){ bassChanges.push(n.t); last = n.t; } } }
+  const nextChange = t => { let lo=0, hi=bassChanges.length; while(lo<hi){ const m=(lo+hi)>>1; if(bassChanges[m] <= t) lo=m+1; else hi=m; } return lo < bassChanges.length ? bassChanges[lo] : t + 3000; };
+  for(const n of notes){
+    const end = n.t + n.d;
+    if(PED.length){ const sp = PED.find(([a,b]) => a <= end && end < b); n.rel = sp ? sp[1] : end; }
+    else n.rel = Math.min(Math.max(end, nextChange(end - 1)), end + 4000);   // no marks: change pedal with the bass
+  }
+  const layerFor = v => v < .5 ? 'v1' : v < .68 ? 'v2' : v < .85 ? 'v3' : 'v4';
+  const voices = [];
+  function bufferFor(p, v){
+    const k = nearestKey(p), order = {v1:['v1','v2','v3','v4'], v2:['v2','v3','v1','v4'], v3:['v3','v2','v4','v1'], v4:['v4','v3','v2','v1']}[layerFor(v)];
+    for(const L of order) if(bufs[L][k]) return [bufs[L][k], k];
+    return [null, k];
+  }
+  function stopVoice(v, fast){
+    if(v.off) return; v.off = true;
+    const now = ac.currentTime;
+    try{ v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(v.g.gain.value, now); v.g.gain.setTargetAtTime(0.0001, now, fast ? .02 : .08); v.src.stop(now + (fast ? .15 : .7)); }catch(e){}
+    if(!fast && bufs.rel[v.n.p] && $('sound').checked){
+      const r = ac.createBufferSource(), g = ac.createGain(); r.buffer = bufs.rel[v.n.p]; g.gain.value = .18 * v.vel; r.connect(g); g.connect(master); r.start(now);
     }
+  }
+  function noteOn(n, vel, dyn){
+    if(!ac || !$('sound').checked) return;
+    const [buf, k] = bufferFor(n.p, dyn);
+    for(const v of voices) if(!v.off && v.n.p === n.p) stopVoice(v, true);          // same key struck again
+    if(!buf){ synthTone(n.p, n.d/1000/speed, vel); return; }
+    const now = ac.currentTime, src = ac.createBufferSource(), g = ac.createGain();
+    src.buffer = buf; src.playbackRate.value = Math.pow(2, (n.p - k)/12);
+    g.gain.value = .9 * vel;
+    src.connect(g); g.connect(master); src.start(now);
+    const v = {n, src, g, vel, off:false}; voices.push(v);
+    src.onended = () => { const i = voices.indexOf(v); if(i >= 0) voices.splice(i, 1); };
+    const live = voices.filter(x => !x.off); if(live.length > 56) stopVoice(live[0], true);
+  }
+  function updateVoices(){ for(const v of voices) if(!v.off && pos >= v.n.rel) stopVoice(v, false); }
+  function stopAll(){ for(const v of voices) stopVoice(v, true); }
+  function synthTone(p, durSec, vel){
     const now = ac.currentTime, f = 440*Math.pow(2,(p-69)/12);
     const g = ac.createGain(); g.connect(master);
     const len = Math.min(3, Math.max(.25, durSec));
@@ -386,11 +429,9 @@ function startPlayer(DATA, SERVER_EDITS){
       o.connect(og); og.connect(g); o.start(now); o.stop(now+len+.3);
     });
   }
+  const playNote = n => { const d = dynVel(n.t); noteOn(n, (active(n) ? 1 : .6) * (.55 + .45*d), d); };
   function soundNotesBetween(a, b){ // onsets in (a,b]
-    for(let i=firstIdxAfter(a+0.001); i<notes.length && notes[i].t<=b; i++){
-      const n = notes[i];
-      tone(n.p, n.d/1000/speed, (active(n) ? 1 : .6) * dynVel(n.t));
-    }
+    for(let i=firstIdxAfter(a+0.001); i<notes.length && notes[i].t<=b; i++) playNote(notes[i]);
   }
   // loudness follows the marks: cresc. rises, dim. falls, f is loud
   function dynVel(t){
@@ -700,13 +741,13 @@ function startPlayer(DATA, SERVER_EDITS){
   function updateMain(){ $('mainBtn').textContent = mode==='step' ? '次の音' : (playing ? '一時停止' : '再生'); }
   function clearGap(){ if(gapTimer){ clearTimeout(gapTimer); gapTimer = null; } }
 
-  function jumpTo(t){ clearGap(); pos = Math.max(0, Math.min(END, t)); stepTarget = null; if(mode==='step') snapStep(0); }
+  function jumpTo(t){ clearGap(); if(ac) stopAll(); pos = Math.max(0, Math.min(END, t)); stepTarget = null; if(mode==='step') snapStep(0); }
   function snapStep(dir){
     // move to nearest onset (dir 0), next (1) or previous (-1)
     let k = onsets.findIndex(t => t >= pos - 0.5);
     if(k < 0) k = onsets.length-1;
     if(dir===1) k = Math.min(onsets.length-1, (onsets[k] > pos+0.5 ? k : k+1));
-    if(dir===-1) k = Math.max(0, k-1);
+    if(dir===-1){ k = Math.max(0, k-1); if(ac) stopAll(); }
     if($('loopOn').checked && dir===1){
       const a = measures[+selA.value].t, b = loopEndT();
       if(onsets[k] >= b || onsets[k] < a){ k = onsets.findIndex(t => t >= a); loopDone(); }
@@ -714,7 +755,7 @@ function startPlayer(DATA, SERVER_EDITS){
     const tgt = onsets[k];
     if(dir===0){ pos = tgt; } else { stepTarget = {from:pos, to:tgt, t0:performance.now()}; }
     ensureAudio();
-    if(dir!==0 && tgt !== undefined) for(const n of notes){ if(n.t===tgt) tone(n.p, n.d/1000/speed, active(n)?1:.6); }
+    if(dir!==0 && tgt !== undefined) for(const n of notes){ if(n.t===tgt) playNote(n); }
   }
 
   let wake = null;
@@ -810,7 +851,7 @@ function startPlayer(DATA, SERVER_EDITS){
         const a = measures[+selA.value].t, b = loopEndT();
         if(pos >= b){
           pos = b; soundNotesBetween(prev, b - 0.5);
-          gapTimer = setTimeout(() => { gapTimer = null; loopDone(); pos = a; last = performance.now(); soundNotesBetween(a-1, a); }, gap*1000);
+          gapTimer = setTimeout(() => { gapTimer = null; loopDone(); if(ac) stopAll(); pos = a; last = performance.now(); soundNotesBetween(a-1, a); }, gap*1000);
         } else soundNotesBetween(prev, pos);
       } else {
         soundNotesBetween(prev, pos);
@@ -823,6 +864,7 @@ function startPlayer(DATA, SERVER_EDITS){
       if(k >= 1){ pos = stepTarget.to; stepTarget = null; }
     }
     updateCamera(dt);
+    if(ac) updateVoices();
     draw();
     // current instruction chips
     const show = $('showMarks').checked;
