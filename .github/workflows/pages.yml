@@ -29,7 +29,7 @@ jobs:
           test -s index.html
           test -s songs/index.json
           for f in $(python3 -c "import json;print(' '.join(s['id'] for s in json.load(open('songs/index.json'))))"); do test -s "songs/$f.json"; done
-          test "$(ls assets/piano/*.mp3 | wc -l)" -ge 20
+          test "$(ls assets/piano/v2/*.mp3 | wc -l)" -ge 20
 
       - name: 公開用フォルダを作る
         run: |
