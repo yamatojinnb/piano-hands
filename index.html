@@ -215,6 +215,7 @@ footer a{color:inherit}
       <dt><kbd>Space</kbd> <kbd>→</kbd> <kbd>PageDown</kbd></dt><dd>再生・一時停止。「1音ずつ」のときは次の音へ</dd>
       <dt><kbd>←</kbd> <kbd>PageUp</kbd></dt><dd>1小節戻る。「1音ずつ」のときは前の音へ</dd>
     </dl>
+    <p class="hint">「流す」で再生中は、画面を消したりほかのアプリに切り替えても音が流れ続けます。ロック画面や通知から一時停止・小節送りもできます。</p>
     <p class="hint">譜面めくり用のBluetoothペダルは、たいてい上のキーを送るので足で操作できます。画面のタップでも同じ動きをします。</p>
   </section>
 
@@ -340,7 +341,7 @@ function startPlayer(DATA, SERVER_EDITS){
   const LAYERS = ['v1','v2','v3','v4'];
   const KEYS = []; for(let k=21; k<=108; k+=3) KEYS.push(k);
   const bufs = {v1:{}, v2:{}, v3:{}, v4:{}, rel:{}};
-  let loading = false;
+  let loading = false, bgAudio = null;
   const nearestKey = p => KEYS.reduce((a,k) => Math.abs(k-p) < Math.abs(a-p) ? k : a, KEYS[0]);
   function makeIR(sec){
     const len = Math.round(ac.sampleRate*sec), ir = ac.createBuffer(2, len, ac.sampleRate);
@@ -352,7 +353,14 @@ function startPlayer(DATA, SERVER_EDITS){
     try{
       ac = new (window.AudioContext||window.webkitAudioContext)();
       try{ if(navigator.audioSession) navigator.audioSession.type = 'playback'; }catch(e){}  // iPhone: play even in silent mode
-      const comp = ac.createDynamicsCompressor(); comp.threshold.value = -6; comp.ratio.value = 2.5; comp.knee.value = 12; comp.connect(ac.destination);
+      const comp = ac.createDynamicsCompressor(); comp.threshold.value = -6; comp.ratio.value = 2.5; comp.knee.value = 12;
+      // play through an <audio> element: phones then treat it as media and keep it running with the screen off
+      try{
+        const out = ac.createMediaStreamDestination(); comp.connect(out);
+        bgAudio = new Audio(); bgAudio.srcObject = out.stream; bgAudio.setAttribute('playsinline', '');
+        const pr = bgAudio.play();
+        if(pr && pr.catch) pr.catch(() => { try{ comp.disconnect(out); }catch(e){} comp.connect(ac.destination); bgAudio = null; });
+      }catch(e){ comp.connect(ac.destination); bgAudio = null; }
       master = ac.createGain(); master.gain.value = .7; master.connect(comp);
       const rev = ac.createConvolver(); rev.buffer = makeIR(2.2);
       const wet = ac.createGain(); wet.gain.value = .22; master.connect(rev); rev.connect(wet); wet.connect(comp);
@@ -404,35 +412,50 @@ function startPlayer(DATA, SERVER_EDITS){
     if(!out.length){ for(const L of ['v2','v3','v1','v4']) if(bufs[L][k]){ out.push([bufs[L][k], 1]); break; } }
     return [out, k];
   }
+  const dampTC = p => p < 48 ? .16 : p < 72 ? .11 : .07;      // dampers stop low strings more slowly
+  function releaseNoise(v, at){
+    if(!bufs.rel[v.n.p] || !$('sound').checked) return;
+    const r = ac.createBufferSource(), g = ac.createGain(); r.buffer = bufs.rel[v.n.p]; g.gain.value = .12 * v.vel;
+    r.connect(g); g.connect(master); r.start(Math.max(ac.currentTime, at)); v.relSrc = r;
+  }
   function stopVoice(v, fast){
     if(v.off) return; v.off = true;
     const now = ac.currentTime;
-    try{ v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(v.g.gain.value, now); v.g.gain.setTargetAtTime(0.0001, now, fast ? .02 : (v.n.p < 48 ? .16 : v.n.p < 72 ? .11 : .07)); for(const x of (v.srcs || [v.src])) x.stop(now + (fast ? .15 : 1)); }catch(e){}
-    if(!fast && bufs.rel[v.n.p] && $('sound').checked){
-      const r = ac.createBufferSource(), g = ac.createGain(); r.buffer = bufs.rel[v.n.p]; g.gain.value = .12 * v.vel; r.connect(g); g.connect(master); r.start(now);
-    }
+    try{ if(v.relSrc) v.relSrc.stop(now); }catch(e){}
+    if(v.start > now + .005){ for(const x of v.srcs) try{ x.stop(now); }catch(e){} return; }   // scheduled but not started
+    try{ v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(v.g.gain.value, now); v.g.gain.setTargetAtTime(0.0001, now, fast ? .02 : dampTC(v.n.p)); for(const x of v.srcs) x.stop(now + (fast ? .15 : 1)); }catch(e){}
+    if(!fast) releaseNoise(v, now);
   }
-  function noteOn(n){
+  function scheduleRelease(v, at){
+    try{ v.g.gain.setValueAtTime(1, at); v.g.gain.setTargetAtTime(0.0001, at, dampTC(v.n.p)); for(const x of v.srcs) x.stop(at + 1.2); }catch(e){}
+    releaseNoise(v, at);
+  }
+  // when: audio-clock time to start (default now); relWhen: when the damper falls (omit = released by updateVoices)
+  function noteOn(n, when, relWhen){
     if(!ac || !$('sound').checked) return;
     const vel = n.vel * (active(n) ? 1 : .55);
     const [parts, k] = layersFor(n.p, n.vel);
-    for(const v of voices) if(!v.off && v.n.p === n.p) stopVoice(v, true);          // same key struck again
-    if(!parts.length){ synthTone(n.p, n.d/1000/speed, vel); return; }
+    const start = Math.max(ac.currentTime, (when ?? ac.currentTime) + (n.jit || 0) / Math.max(.35, speed));
+    for(const v of voices) if(!v.off && v.n.p === n.p && v.start < start){                 // same key struck again
+      try{ v.g.gain.cancelScheduledValues(start); v.g.gain.setTargetAtTime(0.0001, start, .02); for(const x of v.srcs) x.stop(start + .15); if(v.relSrc) v.relSrc.stop(start); }catch(e){}
+      v.off = true;
+    }
+    if(!parts.length){ if(when === undefined || when <= ac.currentTime + .05) synthTone(n.p, n.d/1000/speed, vel); return; }
     const db = -16 + 24*vel;                                                          // ~13 dB between pp and f
-    const now = ac.currentTime + (n.jit || 0) / Math.max(.35, speed);
     const g = ac.createGain(); g.gain.value = 1; g.connect(master);
     const srcs = parts.map(([buf, w]) => {
       const src = ac.createBufferSource(), pg = ac.createGain();
       src.buffer = buf; src.playbackRate.value = Math.pow(2, (n.p - k)/12);
       pg.gain.value = w * Math.pow(10, db/20) * (.11 / rmsOf(buf));
-      src.connect(pg); pg.connect(g); src.start(Math.max(ac.currentTime, now));
+      src.connect(pg); pg.connect(g); src.start(start);
       return src;
     });
-    const v = {n, src: srcs[0], srcs, g, vel, off:false}; voices.push(v);
+    const v = {n, srcs, g, vel, start, off:false, manual: relWhen === undefined}; voices.push(v);
     srcs[0].onended = () => { const i = voices.indexOf(v); if(i >= 0) voices.splice(i, 1); };
-    const live = voices.filter(x => !x.off); if(live.length > 56) stopVoice(live[0], true);
+    if(relWhen !== undefined) scheduleRelease(v, Math.max(start + .04, relWhen));
+    const live = voices.filter(x => !x.off); if(live.length > 64) stopVoice(live[0], true);
   }
-  function updateVoices(){ for(const v of voices) if(!v.off && pos >= v.n.rel) stopVoice(v, false); }
+  function updateVoices(){ for(const v of voices) if(!v.off && v.manual && pos >= v.n.rel) stopVoice(v, false); }
   function stopAll(){ for(const v of voices) stopVoice(v, true); }
   function synthTone(p, durSec, vel){
     const now = ac.currentTime, f = 440*Math.pow(2,(p-69)/12);
@@ -449,10 +472,7 @@ function startPlayer(DATA, SERVER_EDITS){
     });
   }
   const playNote = n => noteOn(n);
-  window.__piano = { get ac(){ return ac; }, get master(){ return master; }, levelAt: t => levelAt(t), notes };   // for testing
-  function soundNotesBetween(a, b){ // onsets in (a,b]
-    for(let i=firstIdxAfter(a+0.001); i<notes.length && notes[i].t<=b; i++) playNote(notes[i]);
-  }
+  window.__piano = { get ac(){ return ac; }, get master(){ return master; }, levelAt: t => levelAt(t), notes, get pos(){ return pos; }, get voices(){ return voices.length; } };   // for testing
   // ---------- musical dynamics ----------
   // A continuous loudness line built from the marks: a hairpin moves from the CURRENT level toward the
   // next written dynamic (or about one step if none follows), and the level stays where it arrived.
@@ -799,7 +819,7 @@ function startPlayer(DATA, SERVER_EDITS){
 
   // ---------- controls ----------
   const fmt = ms => { const s = Math.floor(ms/1000/speed); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); };
-  function setSpeed(v){ speed = v; $('speed').value = v; $('speedVal').textContent = Math.round(v*100)+'%'; store.set('speed', v); $('tDur').textContent = fmt(END); }
+  function setSpeed(v){ if(playing && mode==='play' && !gapTimer){ pos = anchorPos + (clock() - anchorT)*1000*speed; cancelFuture(); speed = v; anchor(); } speed = v; $('speed').value = v; $('speedVal').textContent = Math.round(v*100)+'%'; store.set('speed', v); $('tDur').textContent = fmt(END); }
   $('speed').oninput = e => setSpeed(+e.target.value);
   setSpeed(speed);
 
@@ -809,7 +829,7 @@ function startPlayer(DATA, SERVER_EDITS){
   });
 
   function setMode(m){
-    mode = m; playing = false; clearGap();
+    mode = m; if(playing) cancelFuture(); playing = false; clearGap();
     $('modePlay').classList.toggle('on', m==='play'); $('modeStep').classList.toggle('on', m==='step');
     $('hudMode').textContent = m==='play' ? '流す' : '1音ずつ';
     $('modeHint').textContent = m==='play' ? '設定した速さで流れます。遅くしても手の動きはなめらかに追えます。' : 'ボタンかペダルを押すたびに次の音へ進みます。自分が弾けるまで画面は止まったままです。';
@@ -821,10 +841,10 @@ function startPlayer(DATA, SERVER_EDITS){
   $('modePlay').onclick = () => setMode('play');
   $('modeStep').onclick = () => setMode('step');
 
-  function updateMain(){ $('mainBtn').textContent = mode==='step' ? '次の音' : (playing ? '一時停止' : '再生'); }
-  function clearGap(){ if(gapTimer){ clearTimeout(gapTimer); gapTimer = null; } }
+  function updateMain(){ $('mainBtn').textContent = mode==='step' ? '次の音' : (playing ? '一時停止' : '再生'); try{ navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'; }catch(e){} }
+  function clearGap(){ gapTimer = null; }
 
-  function jumpTo(t){ clearGap(); if(ac) stopAll(); pos = Math.max(0, Math.min(END, t)); stepTarget = null; if(mode==='step') snapStep(0); }
+  function jumpTo(t){ clearGap(); if(ac) stopAll(); pos = Math.max(0, Math.min(END, t)); stepTarget = null; if(playing) anchor(); if(mode==='step') snapStep(0); }
   function snapStep(dir){
     // move to nearest onset (dir 0), next (1) or previous (-1)
     let k = onsets.findIndex(t => t >= pos - 0.5);
@@ -844,13 +864,62 @@ function startPlayer(DATA, SERVER_EDITS){
   let wake = null;
   const keepAwake = async () => { try{ if('wakeLock' in navigator && !wake){ wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', ()=>wake=null);} }catch(e){} };
 
+  // ---------- transport on the audio clock ----------
+  // Playback position comes from the audio clock and notes are handed to the audio engine ~1.2 s ahead by
+  // a worker timer, so music keeps going with the screen off or another app in front.
+  let anchorPos = 0, anchorT = 0, schedUpTo = 0, ticker = null;
+  const clock = () => ac ? ac.currentTime : performance.now()/1000;
+  function anchor(){ anchorPos = pos; anchorT = clock(); schedUpTo = pos - 0.5; }
+  const whenFor = t => anchorT + (t - anchorPos) / (1000*speed);
+  function cancelFuture(){ if(!ac) return; const now = ac.currentTime; for(const v of voices) if(!v.off && v.start > now + .005) stopVoice(v, true); }
+  function tick(){
+    if(mode!=='play' || !playing) return;
+    if(gapTimer){
+      if(clock() < gapTimer.until) return;
+      gapTimer = null; loopDone(); if(ac) stopAll(); pos = measures[+selA.value].t; anchor();
+    }
+    pos = anchorPos + (clock() - anchorT)*1000*speed;
+    const loop = $('loopOn').checked, limit = loop ? loopEndT() : END;
+    const ahead = Math.min(limit, pos + 1200*speed);
+    if(ac && $('sound').checked){
+      for(let i=firstIdxAfter(schedUpTo + 0.001); i<notes.length && notes[i].t <= ahead; i++){
+        const n = notes[i]; if(n.t >= limit) break;
+        noteOn(n, whenFor(n.t), whenFor(n.rel));
+      }
+    }
+    schedUpTo = Math.max(schedUpTo, ahead);
+    if(pos >= limit){
+      pos = limit;
+      if(loop) gapTimer = {until: clock() + gap};
+      else { playing = false; updateMain(); }
+    }
+  }
+  function startTicker(){
+    if(ticker) return;
+    try{ ticker = new Worker(URL.createObjectURL(new Blob(['setInterval(function(){postMessage(0)},100)'], {type:'text/javascript'}))); ticker.onmessage = tick; }
+    catch(e){ ticker = setInterval(tick, 100); }
+  }
+  // lock-screen / notification controls
+  if('mediaSession' in navigator){
+    try{
+      navigator.mediaSession.metadata = new MediaMetadata({title: DATA.title, artist: DATA.composer + ' ' + DATA.work, album: '指づかいピアノ'});
+      const h = (a, f) => { try{ navigator.mediaSession.setActionHandler(a, f); }catch(e){} };
+      h('play', () => { if(mode!=='play') setMode('play'); if(!playing) main(); });
+      h('pause', () => { if(playing) main(); });
+      h('previoustrack', () => back()); h('nexttrack', () => fwd());
+    }catch(e){}
+  }
+
   function main(){
     ensureAudio(); if(ac && ac.state==='suspended') ac.resume();
     keepAwake();
     if(mode==='step'){ snapStep(1); return; }
     if(gapTimer){ clearGap(); playing = false; updateMain(); return; }
     if(pos >= END) pos = 0;
-    playing = !playing; updateMain();
+    playing = !playing;
+    if(playing){ anchor(); startTicker(); if(bgAudio) bgAudio.play().catch(() => {}); tick(); }
+    else cancelFuture();
+    updateMain();
   }
   function back(){
     if(mode==='step'){ snapStep(-1); return; }
@@ -927,20 +996,7 @@ function startPlayer(DATA, SERVER_EDITS){
   let last = performance.now();
   function frame(now){
     const dt = Math.min(100, now - last); last = now;
-    if(mode==='play' && playing && !gapTimer){
-      const prev = pos;
-      pos += dt * speed;
-      if($('loopOn').checked){
-        const a = measures[+selA.value].t, b = loopEndT();
-        if(pos >= b){
-          pos = b; soundNotesBetween(prev, b - 0.5);
-          gapTimer = setTimeout(() => { gapTimer = null; loopDone(); if(ac) stopAll(); pos = a; last = performance.now(); soundNotesBetween(a-1, a); }, gap*1000);
-        } else soundNotesBetween(prev, pos);
-      } else {
-        soundNotesBetween(prev, pos);
-        if(pos >= END){ pos = END; playing = false; updateMain(); }
-      }
-    }
+    if(mode==='play' && playing) tick();
     if(stepTarget){
       const k = Math.min(1, (now - stepTarget.t0) / 140);
       pos = lerp(stepTarget.from, stepTarget.to, ease(k));
