@@ -352,7 +352,7 @@ function startPlayer(DATA, SERVER_EDITS){
     try{
       ac = new (window.AudioContext||window.webkitAudioContext)();
       try{ if(navigator.audioSession) navigator.audioSession.type = 'playback'; }catch(e){}  // iPhone: play even in silent mode
-      const comp = ac.createDynamicsCompressor(); comp.threshold.value = -14; comp.ratio.value = 3; comp.connect(ac.destination);
+      const comp = ac.createDynamicsCompressor(); comp.threshold.value = -6; comp.ratio.value = 2.5; comp.knee.value = 12; comp.connect(ac.destination);
       master = ac.createGain(); master.gain.value = .7; master.connect(comp);
       const rev = ac.createConvolver(); rev.buffer = makeIR(2.2);
       const wet = ac.createGain(); wet.gain.value = .22; master.connect(rev); rev.connect(wet); wet.connect(comp);
@@ -385,32 +385,51 @@ function startPlayer(DATA, SERVER_EDITS){
     if(PED.length){ const sp = PED.find(([a,b]) => a <= end && end < b); n.rel = sp ? sp[1] : end; }
     else n.rel = Math.min(Math.max(end, nextChange(end - 1)), end + 4000);   // no marks: change pedal with the bass
   }
-  const layerFor = v => v < .5 ? 'v1' : v < .68 ? 'v2' : v < .85 ? 'v3' : 'v4';
   const voices = [];
-  function bufferFor(p, v){
-    const k = nearestKey(p), order = {v1:['v1','v2','v3','v4'], v2:['v2','v3','v1','v4'], v3:['v3','v2','v4','v1'], v4:['v4','v3','v2','v1']}[layerFor(v)];
-    for(const L of order) if(bufs[L][k]) return [bufs[L][k], k];
-    return [null, k];
+  // loudness of a recording (first 0.4 s), so every layer and key can be brought to the same level and
+  // the layers differ in tone colour only - loudness itself comes from the musical dynamics below
+  function rmsOf(buf){
+    if(buf._rms) return buf._rms;
+    const d = buf.getChannelData(0), n = Math.min(d.length, Math.round(buf.sampleRate*.4)); let s = 0;
+    for(let i=0;i<n;i++) s += d[i]*d[i];
+    return buf._rms = Math.sqrt(s/n) || .05;
+  }
+  // two neighbouring loudness layers blended by velocity (no audible step between layers)
+  function layersFor(p, vel){
+    const k = nearestKey(p), x = Math.max(0, Math.min(2.999, vel*3)), i = Math.floor(x), f = x - i;
+    const lo = bufs[LAYERS[i]][k], hi = bufs[LAYERS[i+1]][k];
+    const out = [];
+    if(lo) out.push([lo, Math.cos(f*Math.PI/2)]);
+    if(hi) out.push([hi, Math.sin(f*Math.PI/2)]);
+    if(!out.length){ for(const L of ['v2','v3','v1','v4']) if(bufs[L][k]){ out.push([bufs[L][k], 1]); break; } }
+    return [out, k];
   }
   function stopVoice(v, fast){
     if(v.off) return; v.off = true;
     const now = ac.currentTime;
-    try{ v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(v.g.gain.value, now); v.g.gain.setTargetAtTime(0.0001, now, fast ? .02 : .08); v.src.stop(now + (fast ? .15 : .7)); }catch(e){}
+    try{ v.g.gain.cancelScheduledValues(now); v.g.gain.setValueAtTime(v.g.gain.value, now); v.g.gain.setTargetAtTime(0.0001, now, fast ? .02 : (v.n.p < 48 ? .16 : v.n.p < 72 ? .11 : .07)); for(const x of (v.srcs || [v.src])) x.stop(now + (fast ? .15 : 1)); }catch(e){}
     if(!fast && bufs.rel[v.n.p] && $('sound').checked){
-      const r = ac.createBufferSource(), g = ac.createGain(); r.buffer = bufs.rel[v.n.p]; g.gain.value = .18 * v.vel; r.connect(g); g.connect(master); r.start(now);
+      const r = ac.createBufferSource(), g = ac.createGain(); r.buffer = bufs.rel[v.n.p]; g.gain.value = .12 * v.vel; r.connect(g); g.connect(master); r.start(now);
     }
   }
-  function noteOn(n, vel, dyn){
+  function noteOn(n){
     if(!ac || !$('sound').checked) return;
-    const [buf, k] = bufferFor(n.p, dyn);
+    const vel = n.vel * (active(n) ? 1 : .55);
+    const [parts, k] = layersFor(n.p, n.vel);
     for(const v of voices) if(!v.off && v.n.p === n.p) stopVoice(v, true);          // same key struck again
-    if(!buf){ synthTone(n.p, n.d/1000/speed, vel); return; }
-    const now = ac.currentTime, src = ac.createBufferSource(), g = ac.createGain();
-    src.buffer = buf; src.playbackRate.value = Math.pow(2, (n.p - k)/12);
-    g.gain.value = .9 * vel;
-    src.connect(g); g.connect(master); src.start(now);
-    const v = {n, src, g, vel, off:false}; voices.push(v);
-    src.onended = () => { const i = voices.indexOf(v); if(i >= 0) voices.splice(i, 1); };
+    if(!parts.length){ synthTone(n.p, n.d/1000/speed, vel); return; }
+    const db = -16 + 24*vel;                                                          // ~13 dB between pp and f
+    const now = ac.currentTime + (n.jit || 0) / Math.max(.35, speed);
+    const g = ac.createGain(); g.gain.value = 1; g.connect(master);
+    const srcs = parts.map(([buf, w]) => {
+      const src = ac.createBufferSource(), pg = ac.createGain();
+      src.buffer = buf; src.playbackRate.value = Math.pow(2, (n.p - k)/12);
+      pg.gain.value = w * Math.pow(10, db/20) * (.11 / rmsOf(buf));
+      src.connect(pg); pg.connect(g); src.start(Math.max(ac.currentTime, now));
+      return src;
+    });
+    const v = {n, src: srcs[0], srcs, g, vel, off:false}; voices.push(v);
+    srcs[0].onended = () => { const i = voices.indexOf(v); if(i >= 0) voices.splice(i, 1); };
     const live = voices.filter(x => !x.off); if(live.length > 56) stopVoice(live[0], true);
   }
   function updateVoices(){ for(const v of voices) if(!v.off && pos >= v.n.rel) stopVoice(v, false); }
@@ -429,20 +448,84 @@ function startPlayer(DATA, SERVER_EDITS){
       o.connect(og); og.connect(g); o.start(now); o.stop(now+len+.3);
     });
   }
-  const playNote = n => { const d = dynVel(n.t); noteOn(n, (active(n) ? 1 : .6) * (.55 + .45*d), d); };
+  const playNote = n => noteOn(n);
+  window.__piano = { get ac(){ return ac; }, get master(){ return master; }, levelAt: t => levelAt(t), notes };   // for testing
   function soundNotesBetween(a, b){ // onsets in (a,b]
     for(let i=firstIdxAfter(a+0.001); i<notes.length && notes[i].t<=b; i++) playNote(notes[i]);
   }
-  // loudness follows the marks: cresc. rises, dim. falls, f is loud
-  function dynVel(t){
-    let v = .72;
-    for(const m of MARKS.marks){
-      if(m.t > t) break;
-      if(m.kind==='dyn') v = m.it.includes('f') ? .95 : .55;
-      if(m.kind==='hairpin' && t < m.end){ const k = (t - m.t)/(m.end - m.t); v = m.it==='cresc.' ? .62 + .33*k : .9 - .3*k; }
+  // ---------- musical dynamics ----------
+  // A continuous loudness line built from the marks: a hairpin moves from the CURRENT level toward the
+  // next written dynamic (or about one step if none follows), and the level stays where it arrived.
+  // sf / fz / rfz accent a single note; fp is loud then soft. Each note then gets its own touch:
+  // melody above accompaniment, bass slightly present, beat and contour shaping, tiny human variation.
+  const LEVEL = {ppp:.18, pp:.28, p:.4, mp:.5, mf:.6, f:.72, ff:.84, fff:.94};
+  const ACCENT = new Set(['sf','sfz','fz','rfz']);
+  const lv = [];          // [time, level] points, linear in between
+  const accents = [];
+  {
+    const ms = MARKS.marks.slice().sort((a,b) => a.t - b.t);
+    const first = ms.find(m => m.kind==='dyn' && LEVEL[m.it] && m.t < 3000);
+    let cur = first ? LEVEL[first.it] : .5;
+    lv.push([0, cur]);
+    const home = cur;
+    // a loud passage without further marks relaxes back to the piece's home level after ~10 s
+    // (sparse first editions often omit the return to p, e.g. in a reprise)
+    let lastDyn = 0;
+    const drift = t => { if(t - lastDyn > 12000 && cur >= LEVEL.f - .01 && cur - home > .05){ const t0 = Math.max(lv[lv.length-1][0], lastDyn + 9000); if(t0 < t){ lv.push([t0, cur]); lv.push([Math.min(t, t0 + 3000), home]); cur = home; lastDyn = t0; } } };
+    const nextDyn = (t0, t1) => ms.find(m => m.kind==='dyn' && LEVEL[m.it] && m.t >= t0 && m.t <= t1);
+    for(const m of ms){
+      drift(m.t);
+      if(m.kind==='dyn'){
+        if(ACCENT.has(m.it)){ accents.push([m.t, .16]); continue; }
+        if(m.it==='fp'){ accents.push([m.t, .2]); lv.push([m.t, cur]); cur = LEVEL.p; lv.push([m.t+250, cur]); continue; }
+        if(LEVEL[m.it] !== undefined){ lv.push([m.t, cur]); cur = LEVEL[m.it]; lv.push([m.t + 120, cur]); lastDyn = m.t; }
+      } else if(m.kind==='hairpin'){
+        const nd = nextDyn(m.end - 400, m.end + 2500);
+        const base = cur;
+        let target = nd ? LEVEL[nd.it] : cur + (m.it==='cresc.' ? .12 : -.12);
+        if(m.it==='cresc.' && target <= cur) target = cur + .08;
+        if(m.it!=='cresc.' && target >= cur) target = cur - .08;
+        target = Math.max(.14, Math.min(.95, target));
+        lv.push([m.t, cur]); lv.push([m.end, target]);
+        if(nd) cur = target;
+        else { lv.push([m.end + 1600, base]); cur = base; }     // no written goal: a swell that settles back
+      } else if(m.kind==='text' && /smorz|calando|morendo/.test(m.it)){
+        lv.push([m.t, cur]); cur = Math.max(.14, cur - .15); lv.push([m.t + 2500, cur]);
+      } else if(m.kind==='text' && /sotto voce/.test(m.it)){
+        lv.push([m.t, cur]); cur = Math.min(cur, LEVEL.p); lv.push([m.t + 120, cur]);
+      }
     }
-    return v;
+    drift(notes.length ? notes[notes.length-1].t + 20000 : 0);
+    lv.sort((a,b) => a[0]-b[0]);
   }
+  const smooth = k => k*k*(3-2*k);
+  function levelAt(t){
+    let lo = 0, hi = lv.length-1;
+    if(t <= lv[0][0]) return lv[0][1];
+    if(t >= lv[hi][0]) return lv[hi][1];
+    while(hi - lo > 1){ const m = (lo+hi)>>1; if(lv[m][0] <= t) lo = m; else hi = m; }
+    const [t0,v0] = lv[lo], [t1,v1] = lv[hi];
+    return t1 > t0 ? v0 + (v1-v0)*smooth((t-t0)/(t1-t0)) : v1;
+  }
+  { // per-note touch
+    const rnd = i => { const x = Math.sin(i*12.9898 + 78.233)*43758.5453; return x - Math.floor(x); };
+    const meanR = notes.filter(n => n.h==='R').reduce((s,n,_,a) => s + n.p/a.length, 0) || 72;
+    const mStarts = new Set(measures.map(m => m.t));
+    for(const n of notes){
+      let v = levelAt(n.t);
+      const higher = notes.some(m => m.h===n.h && m !== n && m.p > n.p && m.t <= n.t && m.t + m.d > n.t + 20);
+      const lower  = notes.some(m => m.h===n.h && m !== n && m.p < n.p && m.t <= n.t && m.t + m.d > n.t + 20);
+      if(n.h==='R') v += higher ? -.09 : .07;                    // melody sings over the accompaniment
+      else v += lower ? -.08 : .02;                              // bass present, inner notes soft
+      if(mStarts.has(n.t)) v += .03;                             // gentle downbeat
+      if(n.h==='R' && !higher) v += (n.p - meanR) / 12 * .025;   // rising lines open up a little
+      for(const [t, a] of accents) if(Math.abs(t - n.t) < 40 && (!higher || n.h==='L')) v += a;
+      v += (rnd(n.i) - .5) * .05;                                 // no two touches exactly alike
+      n.vel = Math.max(.1, Math.min(1, v));
+      n.jit = higher || lower ? (rnd(n.i+7) - .5) * .012 : 0;   // chords not perfectly vertical
+    }
+  }
+  const dynVel = t => levelAt(t);
 
   // ---------- theme colors ----------
   let C = {};
