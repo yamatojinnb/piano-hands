@@ -349,40 +349,46 @@ function startPlayer(DATA, SERVER_EDITS){
     for(let c=0;c<2;c++){ const d = ir.getChannelData(c); for(let i=0;i<len;i++){ const t = i/len; d[i] = (Math.random()*2-1) * Math.pow(1-t, 3.2) * (i < ac.sampleRate*0.012 ? i/(ac.sampleRate*0.012) : 1); } }
     return ir;
   }
-  function ensureAudio(){
+  // The audio graph is built and the recordings are decoded as soon as the song opens (the context waits
+  // suspended until the first tap), so the first notes never fall into a gap while files are still loading.
+  let v2Ready = false, pendingPlay = false, loadPct = 0;
+  function buildAudio(){
     if(ac) return;
     try{
       const AC = window.AudioContext||window.webkitAudioContext;
       try{ ac = new AC({latencyHint: 'playback'}); }catch(e){ ac = new AC(); }   // larger buffers: no dropouts on phones
       try{ if(navigator.audioSession) navigator.audioSession.type = 'playback'; }catch(e){}  // iPhone: play even in silent mode
-      // gentle compressor, then a brick-wall limiter so stacked loud notes never exceed full scale
+      // gentle compressor, then a limiter so stacked loud notes never exceed full scale (no reverb: too heavy for phones)
       const glue = ac.createDynamicsCompressor(); glue.threshold.value = -10; glue.ratio.value = 2; glue.knee.value = 10;
       const comp = ac.createDynamicsCompressor(); comp.threshold.value = -3; comp.knee.value = 0; comp.ratio.value = 20; comp.attack.value = .001; comp.release.value = .12;
-      glue.connect(comp); outNode = comp;
-      comp.connect(ac.destination);
-      // keep the page "playing media" with a silent looping <audio>, so the phone does not suspend it
-      // when the screen goes off (the music itself goes straight to the speakers: no extra buffering)
-      try{ bgAudio = new Audio(SILENCE); bgAudio.loop = true; bgAudio.volume = .01; bgAudio.setAttribute('playsinline', ''); bgAudio.play().catch(() => {}); }catch(e){ bgAudio = null; }
+      glue.connect(comp); outNode = comp; comp.connect(ac.destination);
       master = ac.createGain(); master.gain.value = .6; master.connect(glue);
-      const rev = ac.createConvolver(); rev.buffer = makeIR(1.4);
-      const wet = ac.createGain(); wet.gain.value = .22; master.connect(rev); rev.connect(wet); wet.connect(glue);
-      setTimeout(loadSamples, 0);
+      loadSamples();
     }catch(e){ ac = null; }
+  }
+  function ensureAudio(){      // on a tap: wake the audio up
+    buildAudio(); if(!ac) return;
+    if(ac.state === 'suspended') ac.resume();
+    // keep the page "playing media" with a silent looping <audio> so the phone does not suspend it with the screen off
+    if(!bgAudio){ try{ bgAudio = new Audio(SILENCE); bgAudio.loop = true; bgAudio.volume = .01; bgAudio.setAttribute('playsinline', ''); bgAudio.play().catch(() => {}); }catch(e){ bgAudio = null; } }
   }
   async function loadSamples(){
     if(loading || !ac) return; loading = true;
     const need = [...new Set(notes.map(n => nearestKey(n.p)))];
     const relNeed = [...new Set(notes.map(n => Math.max(21, Math.min(108, n.p))))];
-    // middle layer first so sound is available quickly, then the others
-    const jobs = [];
-    for(const L of ['v2','v3','v1','v4']) for(const k of need) jobs.push([L, k]);
-    for(const p of relNeed) jobs.push(['rel', p]);
-    let done = 0;
-    const total = jobs.length;
-    const st2 = () => $('soundState').textContent = done < total ? `ピアノの音を準備中… ${Math.round(done/total*100)}%` : 'ピアノの音で鳴ります';
-    const w2 = async () => { while(jobs.length){ const [L,k] = jobs.shift(); try{ const arr = await (await fetch(`assets/piano/${L}/${k}.mp3`)).arrayBuffer(); bufs[L][k] = await new Promise((ok, ng) => { const pr = ac.decodeAudioData(arr, ok, ng); if(pr && pr.catch) pr.catch(ng); }); }catch(e){} done++; if(done % 8 === 0 || done === total) st2(); } };
-    await Promise.all([w2(), w2(), w2(), w2(), w2(), w2()]);
-    st2();
+    const first = need.map(k => ['v2', k]);                   // enough to play
+    const rest = [];
+    for(const L of ['v3','v1','v4']) for(const k of need) rest.push([L, k]);
+    for(const p of relNeed) rest.push(['rel', p]);
+    const total = first.length + rest.length; let done = 0;
+    const show = () => { loadPct = Math.round(done/total*100); $('soundState').textContent = done < total ? `ピアノの音を準備中… ${loadPct}%` : 'ピアノの音で鳴ります'; if(pendingPlay) updateMain(); };
+    const run = async jobs => { while(jobs.length){ const [L,k] = jobs.shift(); try{ const arr = await (await fetch(`assets/piano/${L}/${k}.mp3`)).arrayBuffer(); bufs[L][k] = await new Promise((ok, ng) => { const pr = ac.decodeAudioData(arr, ok, ng); if(pr && pr.catch) pr.catch(ng); }); }catch(e){} done++; if(done % 6 === 0 || done === total) show(); } };
+    show();
+    await Promise.all([run(first), run(first), run(first), run(first)]);
+    v2Ready = true; show();
+    if(pendingPlay){ pendingPlay = false; main(); }
+    await Promise.all([run(rest), run(rest)]);                 // two at a time: light on the phone while playing
+    show();
   }
   // when each note's sound stops: at its written end, or later while the pedal is down
   const PED = (MARKS.pedal || []);
@@ -403,16 +409,11 @@ function startPlayer(DATA, SERVER_EDITS){
   // per key made the top octaves clip.
   let LAYER_GAIN = {v1: 2.1, v2: 1, v3: .62, v4: .46};
   fetch('assets/piano/index.json').then(r => r.json()).then(j => { if(j.layer_gain) LAYER_GAIN = j.layer_gain; }).catch(() => {});
-  // two neighbouring loudness layers blended by velocity (no audible step between layers)
+  // one recording per note: the loudness layer nearest to the touch (fallback to any loaded layer)
   function layersFor(p, vel){
-    const k = nearestKey(p), x = Math.max(0, Math.min(2.999, vel*3)), i = Math.floor(x), f = x - i;
-    const lo = bufs[LAYERS[i]][k], hi = bufs[LAYERS[i+1]][k];
-    const out = [];
-    // blend two layers only near a layer boundary; otherwise one recording (half the work for the phone)
-    if(lo && (f < .8 || !hi)) out.push([lo, hi && f >= .2 ? Math.cos(f*Math.PI/2) : 1, LAYERS[i]]);
-    if(hi && (f > .2 || !lo)) out.push([hi, lo && f <= .8 ? Math.sin(f*Math.PI/2) : 1, LAYERS[i+1]]);
-    if(!out.length){ for(const L of ['v2','v3','v1','v4']) if(bufs[L][k]){ out.push([bufs[L][k], 1, L]); break; } }
-    return [out, k];
+    const k = nearestKey(p), want = Math.max(0, Math.min(3, Math.round(vel*3)));
+    for(const d of [0, -1, 1, -2, 2, -3, 3]){ const L = LAYERS[want + d]; if(L && bufs[L][k]) return [[[bufs[L][k], 1, L]], k]; }
+    return [[], k];
   }
   const dampTC = p => p < 48 ? .16 : p < 72 ? .11 : .07;      // dampers stop low strings more slowly
   function releaseNoise(v, at){
@@ -429,7 +430,7 @@ function startPlayer(DATA, SERVER_EDITS){
     if(!fast) releaseNoise(v, now);
   }
   function scheduleRelease(v, at){
-    try{ v.g.gain.setValueAtTime(1, at); v.g.gain.setTargetAtTime(0.0001, at, dampTC(v.n.p)); for(const x of v.srcs) x.stop(at + 1.2); }catch(e){}
+    try{ v.g.gain.setValueAtTime(1, at); v.g.gain.setTargetAtTime(0.0001, at, dampTC(v.n.p)); for(const x of v.srcs) x.stop(at + .8); }catch(e){}
     releaseNoise(v, at);
   }
   // when: audio-clock time to start (default now); relWhen: when the damper falls (omit = released by updateVoices)
@@ -455,7 +456,7 @@ function startPlayer(DATA, SERVER_EDITS){
     const v = {n, srcs, g, vel, start, off:false, manual: relWhen === undefined}; voices.push(v);
     srcs[0].onended = () => { const i = voices.indexOf(v); if(i >= 0) voices.splice(i, 1); };
     if(relWhen !== undefined) scheduleRelease(v, Math.max(start + .04, relWhen));
-    const live = voices.filter(x => !x.off); if(live.length > 40) stopVoice(live[0], true);
+    const live = voices.filter(x => !x.off); if(live.length > 32) stopVoice(live[0], true);
   }
   function updateVoices(){ for(const v of voices) if(!v.off && v.manual && pos >= v.n.rel) stopVoice(v, false); }
   function stopAll(){ for(const v of voices) stopVoice(v, true); }
@@ -843,7 +844,7 @@ function startPlayer(DATA, SERVER_EDITS){
   $('modePlay').onclick = () => setMode('play');
   $('modeStep').onclick = () => setMode('step');
 
-  function updateMain(){ $('mainBtn').textContent = mode==='step' ? '次の音' : (playing ? '一時停止' : '再生'); try{ navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'; }catch(e){} }
+  function updateMain(){ $('mainBtn').textContent = mode==='step' ? '次の音' : pendingPlay ? `準備中 ${loadPct}%` : (playing ? '一時停止' : '再生'); try{ navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'; }catch(e){} }
   function clearGap(){ gapTimer = null; }
 
   function jumpTo(t){ clearGap(); if(ac) stopAll(); pos = Math.max(0, Math.min(END, t)); stepTarget = null; if(playing) anchor(); if(mode==='step') snapStep(0); }
@@ -865,6 +866,8 @@ function startPlayer(DATA, SERVER_EDITS){
 
   let wake = null;
   const keepAwake = async () => { try{ if('wakeLock' in navigator && !wake){ wake = await navigator.wakeLock.request('screen'); wake.addEventListener('release', ()=>wake=null);} }catch(e){} };
+
+  buildAudio();
 
   // ---------- transport on the audio clock ----------
   // Playback position comes from the audio clock and notes are handed to the audio engine ~1.2 s ahead by
@@ -918,6 +921,7 @@ function startPlayer(DATA, SERVER_EDITS){
     if(mode==='step'){ snapStep(1); return; }
     if(gapTimer){ clearGap(); playing = false; updateMain(); return; }
     if(pos >= END) pos = 0;
+    if(!playing && !v2Ready && ac){ pendingPlay = !pendingPlay; updateMain(); return; }   // start as soon as the sound is ready
     playing = !playing;
     if(playing){ anchor(); startTicker(); if(bgAudio) bgAudio.play().catch(() => {}); tick(); }
     else cancelFuture();
