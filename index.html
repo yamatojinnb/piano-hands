@@ -351,7 +351,7 @@ function startPlayer(DATA, SERVER_EDITS){
   }
   // The audio graph is built and the recordings are decoded as soon as the song opens (the context waits
   // suspended until the first tap), so the first notes never fall into a gap while files are still loading.
-  let v2Ready = false, pendingPlay = false, loadPct = 0;
+  let v2Ready = false, pendingPlay = false, loadPct = 0, IR = null;
   function buildAudio(){
     if(ac) return;
     try{
@@ -363,6 +363,7 @@ function startPlayer(DATA, SERVER_EDITS){
       const comp = ac.createDynamicsCompressor(); comp.threshold.value = -3; comp.knee.value = 0; comp.ratio.value = 20; comp.attack.value = .001; comp.release.value = .12;
       glue.connect(comp); outNode = comp; comp.connect(ac.destination);
       master = ac.createGain(); master.gain.value = .6; master.connect(glue);
+      IR = makeIR(1.8);
       loadSamples();
     }catch(e){ ac = null; }
   }
@@ -415,6 +416,14 @@ function startPlayer(DATA, SERVER_EDITS){
     for(const d of [0, -1, 1, -2, 2, -3, 3]){ const L = LAYERS[want + d]; if(L && bufs[L][k]) return [[[bufs[L][k], 1, L]], k]; }
     return [[], k];
   }
+  // offline renderer can afford to blend the two neighbouring loudness layers (smooth change of tone colour)
+  function layersBlend(p, vel){
+    const k = nearestKey(p), x = Math.max(0, Math.min(2.999, vel*3)), i = Math.floor(x), f = x - i;
+    const lo = bufs[LAYERS[i]][k], hi = bufs[LAYERS[i+1]][k], out = [];
+    if(lo) out.push([lo, hi ? Math.cos(f*Math.PI/2) : 1, LAYERS[i]]);
+    if(hi) out.push([hi, lo ? Math.sin(f*Math.PI/2) : 1, LAYERS[i+1]]);
+    return out.length ? [out, k] : layersFor(p, vel);
+  }
   const dampTC = p => p < 48 ? .16 : p < 72 ? .11 : .07;      // dampers stop low strings more slowly
   function releaseNoise(v, at){
     if(!bufs.rel[v.n.p] || !$('sound').checked) return;
@@ -459,7 +468,7 @@ function startPlayer(DATA, SERVER_EDITS){
     const live = voices.filter(x => !x.off); if(live.length > 32) stopVoice(live[0], true);
   }
   function updateVoices(){ for(const v of voices) if(!v.off && v.manual && pos >= v.n.rel) stopVoice(v, false); }
-  function stopAll(){ for(const v of voices) stopVoice(v, true); }
+  function stopAll(){ for(const v of voices) stopVoice(v, true); if(typeof stopChunks === 'function') stopChunks(); }
   function synthTone(p, durSec, vel){
     const now = ac.currentTime, f = 440*Math.pow(2,(p-69)/12);
     const g = ac.createGain(); g.connect(master);
@@ -822,7 +831,7 @@ function startPlayer(DATA, SERVER_EDITS){
 
   // ---------- controls ----------
   const fmt = ms => { const s = Math.floor(ms/1000/speed); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); };
-  function setSpeed(v){ if(playing && mode==='play' && !gapTimer){ pos = anchorPos + (clock() - anchorT)*1000*speed; cancelFuture(); speed = v; anchor(); } speed = v; $('speed').value = v; $('speedVal').textContent = Math.round(v*100)+'%'; store.set('speed', v); $('tDur').textContent = fmt(END); }
+  function setSpeed(v){ if(playing && mode==='play' && !gapTimer){ pos = Math.max(anchorPos, anchorPos + (clock() - anchorT)*1000*speed); speed = v; anchor(.1); } speed = v; $('speed').value = v; $('speedVal').textContent = Math.round(v*100)+'%'; store.set('speed', v); $('tDur').textContent = fmt(END); }
   $('speed').oninput = e => setSpeed(+e.target.value);
   setSpeed(speed);
 
@@ -847,7 +856,7 @@ function startPlayer(DATA, SERVER_EDITS){
   function updateMain(){ $('mainBtn').textContent = mode==='step' ? '次の音' : pendingPlay ? `準備中 ${loadPct}%` : (playing ? '一時停止' : '再生'); try{ navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'; }catch(e){} }
   function clearGap(){ gapTimer = null; }
 
-  function jumpTo(t){ clearGap(); if(ac) stopAll(); pos = Math.max(0, Math.min(END, t)); stepTarget = null; if(playing) anchor(); if(mode==='step') snapStep(0); }
+  function jumpTo(t){ clearGap(); if(ac) stopAll(); pos = Math.max(0, Math.min(END, t)); stepTarget = null; if(playing) anchor(.1); if(mode==='step') snapStep(0); }
   function snapStep(dir){
     // move to nearest onset (dir 0), next (1) or previous (-1)
     let k = onsets.findIndex(t => t >= pos - 0.5);
@@ -872,27 +881,88 @@ function startPlayer(DATA, SERVER_EDITS){
   // ---------- transport on the audio clock ----------
   // Playback position comes from the audio clock and notes are handed to the audio engine ~1.2 s ahead by
   // a worker timer, so music keeps going with the screen off or another app in front.
-  let anchorPos = 0, anchorT = 0, schedUpTo = 0, ticker = null;
+  let anchorPos = 0, anchorT = 0, ticker = null;
   const clock = () => ac ? ac.currentTime : performance.now()/1000;
-  function anchor(){ anchorPos = pos; anchorT = clock(); schedUpTo = pos - 0.5; }
   const whenFor = t => anchorT + (t - anchorPos) / (1000*speed);
-  function cancelFuture(){ if(!ac) return; const now = ac.currentTime; for(const v of voices) if(!v.off && v.start > now + .005) stopVoice(v, true); }
+
+  // ---------- pre-rendered playback ----------
+  // Just ahead of the playhead, notes are mixed into short chunks by an OfflineAudioContext (no real-time
+  // deadline, so full quality: blended layers, reverb, long decay). Only those chunks play live, which costs
+  // about as much as playing a recording. Every note lives entirely in one chunk, so chunks simply add up.
+  // After a jump the first chunk is only 0.35 s long, so sound starts again almost at once.
+  { const last = {}; for(const n of notes){ if(last[n.p]) last[n.p].cut = n.t; last[n.p] = n; } }   // same key struck again
+  const relOf = n => Math.min(n.rel, n.cut ?? Infinity);
+  let gen = 0, renderedTo = 0, rendering = false;
+  const chunks = [];
+  function stopChunks(){
+    if(!ac) return; const now = ac.currentTime;
+    for(const c of chunks.splice(0)){ try{ c.g.gain.setTargetAtTime(0, now, .025); c.s.stop(now + .2); }catch(e){} }
+  }
+  function anchor(lead){
+    gen++; rendering = false; stopChunks();
+    anchorPos = pos; anchorT = clock() + (lead || 0); renderedTo = pos;
+  }
+  async function renderChunk(t0, t1){
+    const sr = ac.sampleRate, sp = 1000*speed, list = [];
+    for(let i=firstIdxAfter(t0 - .001); i<notes.length && notes[i].t < t1; i++) list.push(notes[i]);
+    if(!list.length) return null;
+    let dur = 0;
+    for(const n of list) dur = Math.max(dur, (n.t - t0)/sp + Math.min(12, (relOf(n) - n.t)/sp) + 1);
+    dur = Math.min(dur + (IR ? 1.9 : .1), 16);
+    const oc = new OfflineAudioContext(2, Math.ceil(dur*sr), sr);
+    const bus = oc.createGain(); bus.connect(oc.destination);
+    if(IR){ const cv = oc.createConvolver(); cv.buffer = IR; const wet = oc.createGain(); wet.gain.value = .18; bus.connect(cv); cv.connect(wet); wet.connect(oc.destination); }
+    for(const n of list){
+      const [parts, k] = layersBlend(n.p, n.vel);
+      if(!parts.length) continue;
+      const vel = n.vel * (active(n) ? 1 : .55), db = -16 + 24*vel;
+      const start = Math.max(0, (n.t - t0)/sp + (n.jit || 0)/Math.max(.35, speed));
+      const rel = start + Math.max(.04, (relOf(n) - n.t)/sp);
+      const g = oc.createGain(); g.connect(bus);
+      g.gain.setValueAtTime(1, rel); g.gain.setTargetAtTime(0.0001, rel, relOf(n) < n.rel ? .03 : dampTC(n.p));
+      for(const [buf, w, L] of parts){
+        const sN = oc.createBufferSource(), pg = oc.createGain();
+        sN.buffer = buf; sN.playbackRate.value = Math.pow(2, (n.p - k)/12);
+        pg.gain.value = w * Math.pow(10, db/20) * (LAYER_GAIN[L] || 1);
+        sN.connect(pg); pg.connect(g); sN.start(start); sN.stop(Math.min(dur, rel + 1));
+      }
+      if(bufs.rel[n.p] && relOf(n) === n.rel && rel < dur){
+        const r = oc.createBufferSource(), rg = oc.createGain(); r.buffer = bufs.rel[n.p]; rg.gain.value = .1 * vel; r.connect(rg); rg.connect(bus); r.start(rel);
+      }
+    }
+    return await oc.startRendering();
+  }
+  function pump(){
+    if(rendering || !ac || !v2Ready || !playing || mode!=='play' || !$('sound').checked) return;
+    const limit = $('loopOn').checked ? loopEndT() : END;
+    const target = Math.min(limit, Math.max(pos, anchorPos) + 2500*speed);
+    if(renderedTo >= target - 1) return;
+    const firstChunk = renderedTo <= anchorPos + 1;
+    const t0 = renderedTo, t1 = Math.min(limit, t0 + (firstChunk ? 350 : 1000) * speed);
+    const my = gen; rendering = true;
+    renderChunk(t0, t1).then(buf => {
+      if(my !== gen) return;
+      rendering = false; renderedTo = t1;
+      if(buf){
+        const s = ac.createBufferSource(), g = ac.createGain(); s.buffer = buf; s.connect(g); g.connect(master);
+        const when = whenFor(t0), now = ac.currentTime;
+        if(when >= now) s.start(when); else if(now - when < buf.duration) s.start(now, now - when);
+        const c = {s, g}; chunks.push(c); s.onended = () => { const i = chunks.indexOf(c); if(i >= 0) chunks.splice(i, 1); };
+      }
+      pump();
+    }).catch(() => { if(my === gen) rendering = false; });
+  }
+  function cancelFuture(){ stopChunks(); gen++; rendering = false; }
+
   function tick(){
     if(mode!=='play' || !playing) return;
     if(gapTimer){
       if(clock() < gapTimer.until) return;
-      gapTimer = null; loopDone(); if(ac) stopAll(); pos = measures[+selA.value].t; anchor();
+      gapTimer = null; loopDone(); if(ac) stopAll(); pos = measures[+selA.value].t; anchor(.12);
     }
-    pos = anchorPos + (clock() - anchorT)*1000*speed;
+    pos = Math.max(anchorPos, anchorPos + (clock() - anchorT)*1000*speed);
     const loop = $('loopOn').checked, limit = loop ? loopEndT() : END;
-    const ahead = Math.min(limit, pos + 1200*speed);
-    if(ac && $('sound').checked){
-      for(let i=firstIdxAfter(schedUpTo + 0.001); i<notes.length && notes[i].t <= ahead; i++){
-        const n = notes[i]; if(n.t >= limit) break;
-        noteOn(n, whenFor(n.t), whenFor(n.rel));
-      }
-    }
-    schedUpTo = Math.max(schedUpTo, ahead);
+    pump();
     if(pos >= limit){
       pos = limit;
       if(loop) gapTimer = {until: clock() + gap};
@@ -923,7 +993,7 @@ function startPlayer(DATA, SERVER_EDITS){
     if(pos >= END) pos = 0;
     if(!playing && !v2Ready && ac){ pendingPlay = !pendingPlay; updateMain(); return; }   // start as soon as the sound is ready
     playing = !playing;
-    if(playing){ anchor(); startTicker(); if(bgAudio) bgAudio.play().catch(() => {}); tick(); }
+    if(playing){ anchor(.12); startTicker(); if(bgAudio) bgAudio.play().catch(() => {}); tick(); }
     else cancelFuture();
     updateMain();
   }
