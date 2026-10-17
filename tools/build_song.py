@@ -180,6 +180,13 @@ def build(song):
         for h in "LR": set_poses([n for n in notes if n["hand"] == h], h)
 
     marks = extract_marks(song, lines, tm)
+    # a real pianist's performance (velocity per note, pedal, tempo map), aligned to these score notes
+    perf = None
+    if song.get("perf"):
+        pf = json.load(open(os.path.join(ROOT, song["perf"]), encoding="utf-8"))
+        for n in notes: n["pv"] = pf["velocity"].get(f'{n["t"]}:{n["p"]}', 0)
+        perf = dict(performer=re.sub(r"\d+$", "", pf["performer"]), source=pf["source"], file=pf["file"],
+                    license=pf["license"], tempo=pf["tempo"], pedal=pf["pedal"])
     out = dict(
         id=song["id"], title=song["title"], composer=song["composer"], work=song["work"],
         speed=song.get("speed", 0.5),
@@ -187,9 +194,10 @@ def build(song):
         measures=[[t, m] for t, m in meas],
         notes=[[n["t"], n["off"] - n["t"], n["p"], 0 if n["hand"] == "L" else 1, n["f"], meas[n["mi"]][1],
                 1 if n["grace"] else 0, 1 if n["trill"] else 0, n["pos"],
-                2 if n.get("mine") else (1 if n.get("of") else 0)] for n in notes],
+                2 if n.get("mine") else (1 if n.get("of") else 0), n.get("pv", 0)] for n in notes],
         marks=marks,
     )
+    if perf: out["perf"] = perf
     json.dump(out, open(os.path.join(ROOT, "songs", song["id"] + ".json"), "w", encoding="utf-8"),
               ensure_ascii=False, separators=(",", ":"))
     stats.update(quality(notes)); stats["engine"] = engine

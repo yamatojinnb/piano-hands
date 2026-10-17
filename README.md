@@ -17,10 +17,13 @@
 ## ピアノの音
 
 - 強さ4段階の録音を、強弱の指示（だんだん強く など）に合わせて切り替える
+- 実際のピアニストの演奏記録がある曲（革命のエチュード、悲愴 第2楽章）は、1音ずつの強さ・ペダルをその演奏から取る。テンポの揺れ（ルバート）も画面のスイッチでつけられる（曲全体の長さは楽譜どおりに保つので、速さの%の意味は変わらない）。データは `tools/perf/<曲ID>.json`（楽譜の時間に合わせ済み）
+- ホールの響き：ベルリン・フィルハーモニーで実測した響き（インパルス応答）をかける。強さは画面の「ホールの響き」で調整
+- ペダルを踏んでいる間は、ほかの弦が共鳴して鳴る響きを少し加える（`python tools/make_resonance.py` で作り直せる）
 - 低い音は最長10秒まで自然に響きが消えていく
 - ペダル：楽譜にペダル記号があればその区間は音を伸ばす。記号がない曲は、ベースが変わるところで踏み替える前提で伸ばす
-- 部屋の響き（残響）と、鍵盤を離したときの小さな音を加える
-- 再生中は、すぐ先の数秒分をあらかじめ1本の音に書き出してから流す（スマホでも途切れない。1小節戻ってもすぐ鳴る）
+- 鍵盤を離したときの小さな音を加える
+- 再生中は、すぐ先の数秒分をあらかじめ1本の音に書き出してから流す（スマホでも途切れない。1小節戻ってもすぐ鳴る）。ピアノの音を先に書き出し、ホールと弦の共鳴はそのすぐ後に別に書き出して重ねるので、響きを足しても戻ったときに鳴り始めるまでの時間は変わらない
 - 音のファイルは `python tools/make_samples.py` で作り直せる
 
 ## フォルダ構成
@@ -29,6 +32,7 @@
 |---|---|
 | `index.html` | アプリ本体（曲の一覧と練習画面） |
 | `assets/piano/` | ピアノの音（Salamander Grand Piano。強さ4段階×30音＋鍵盤を離す音88、約10MB。曲で使う音だけを読み込む） |
+| `assets/ir/` | ホールの響き（ベルリン・フィルハーモニー）と、ペダルを踏んだときの弦の共鳴 |
 | `songs/index.json` | 曲の一覧（自動生成） |
 | `songs/<曲ID>.json` | 曲データ：音符・指番号・手の位置・日本語の指示（自動生成） |
 | `songs/fix/<曲ID>.json` | 自分で直した指番号（画面の「GitHubに保存」から自動で追記） |
@@ -89,4 +93,6 @@ python tools/build_song.py <曲ID>
 - ショパン：Fryderyk Chopin Institute「Chopin First Editions」（CC BY 4.0） https://github.com/pl-wnifc/humdrum-chopin-first-editions
 - ベートーヴェン：Craig Stuart Sapp「Beethoven Piano Sonatas」 https://github.com/craigsapp/beethoven-piano-sonatas
 - ピアノの音：Salamander Grand Piano（Alexander Holm、CC BY 3.0）、npm パッケージ @audio-samples/piano-mp3-velocity8 を短く切って使用
+- ホールの響き：David Ackermann, Audio Communication Group, Technical University of Berlin, Berliner Philharmonie BRIR（CC BY-NC-SA 4.0） http://dx.doi.org/10.14279/depositonce-15774 。直接音の前の無音を削り、音量をそろえて使用（`assets/ir/LICENSE.txt`）
+- ピアニストの演奏記録：ASAP / (n)ASAP dataset（MAESTRO・e-Piano Competition 由来、CC BY-NC-SA 4.0） https://github.com/CPJKU/asap-dataset 。楽譜の時間に合わせ、1音ずつの強さ・ペダル・テンポの変化だけを取り出して使用
 - 自動運指：Eita Nakamura, Yasuyuki Saito, Kazuyoshi Yoshii, "Statistical Learning and Estimation of Piano Fingering", Information Sciences 517 (2020)。プログラム https://github.com/statpianofingering/statpianofingering.github.io （予備として PianoPlayer https://github.com/marcomusy/pianoplayer ）

@@ -1,0 +1,7 @@
+berliner-philharmonie.wav
+
+Binaural room impulse response measured in the Berliner Philharmonie (FABIAN head and torso simulator).
+CC BY-NC-SA 4.0, David Ackermann, Audio Communication Group, Technical University of Berlin.
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+Data: http://dx.doi.org/10.14279/depositonce-15774 (obtained via github.com/pyfar/files)
+Changes: trimmed the pre-delay before the direct sound and normalised the level. This file is shared under the same license.

@@ -1,0 +1,13 @@
+{
+ "hall": {
+  "file": "berliner-philharmonie.wav",
+  "direct_ms": 4.5,
+  "wet_max": 0.4,
+  "note": "BRIR of the Berlin Philharmonie (TU Berlin); the direct sound is cut in the app and only the hall's reflections and tail are mixed in"
+ },
+ "strings": {
+  "file": "strings.wav",
+  "gain": 0.0003,
+  "note": "tools/make_resonance.py; mixed in only while the sustain pedal is down"
+ }
+}

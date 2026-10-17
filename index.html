@@ -114,7 +114,7 @@ footer a{color:inherit}
   </header>
   <ul class="songs" id="songList"></ul>
   <p class="hint" id="homeMsg"></p>
-  <footer>ピアノの音：Salamander Grand Piano（Alexander Holm、CC BY 3.0）。指番号は、自分で直したもの・楽譜に印刷されたもの・ピアニストの指使いから学習した統計モデル（Nakamura ほか 2019）による自動計算の順に使っています。</footer>
+  <footer>ピアノの音：Salamander Grand Piano（Alexander Holm、CC BY 3.0）。ホールの響き：ベルリン・フィルハーモニーで測った響き（David Ackermann／ベルリン工科大学、CC BY-NC-SA 4.0）。指番号は、自分で直したもの・楽譜に印刷されたもの・ピアニストの指使いから学習した統計モデル（Nakamura ほか 2019）による自動計算の順に使っています。</footer>
 </div>
 
 <div class="wrap" id="player" hidden>
@@ -164,9 +164,15 @@ footer a{color:inherit}
         <input type="range" id="speed" min="0.1" max="1" step="0.05" value="0.35">
         <span class="val" id="speedVal">35%</span>
       </div>
+      <div class="row">
+        <label for="hall">ホールの響き</label>
+        <input type="range" id="hall" min="0" max="1" step="0.05" value="0.6">
+        <span class="val" id="hallVal">60%</span>
+      </div>
       <label class="switch"><input type="checkbox" id="sound" checked> お手本の音を鳴らす <span class="hint" id="soundState">（再生を押すと鳴ります）</span></label>
       <label class="switch"><input type="checkbox" id="showMarks" checked> 強弱やペダルの指示を日本語で出す</label>
       <label class="switch"><input type="checkbox" id="follow" checked> 鍵盤を手に合わせて拡大する</label>
+      <label class="switch" id="rubatoRow" hidden><input type="checkbox" id="rubato"> <span id="rubatoLabel"></span></label>
     </section>
 
     <section class="panel">
@@ -264,20 +270,52 @@ function startPlayer(DATA, SERVER_EDITS){
   document.title = DATA.title + ' — 指づかいピアノ';
   $('songTitle').textContent = DATA.title;
   $('songSub').textContent = `${DATA.composer} ${DATA.work} ・ 指番号つき`;
-  $('songCredit').innerHTML = `楽譜：<a href="${esc(DATA.source.url)}" target="_blank" rel="noopener">${esc(DATA.source.name)}</a>${DATA.source.license ? '（' + esc(DATA.source.license) + '）' : ''}。ピアノの音：Salamander Grand Piano（Alexander Holm、CC BY 3.0）。金色以外の指番号は自動計算か自分で直したもので、先生や出版譜の指使いとは違う場合があります。`;
+  $('songCredit').innerHTML = `楽譜：<a href="${esc(DATA.source.url)}" target="_blank" rel="noopener">${esc(DATA.source.name)}</a>${DATA.source.license ? '（' + esc(DATA.source.license) + '）' : ''}。ピアノの音：Salamander Grand Piano（Alexander Holm、CC BY 3.0）。ホールの響き：ベルリン・フィルハーモニーで測った響き（David Ackermann／ベルリン工科大学、CC BY-NC-SA 4.0）。金色以外の指番号は自動計算か自分で直したもので、先生や出版譜の指使いとは違う場合があります。`;
   const cv = $('cv'), ctx = cv.getContext('2d');
   const store = {
     get(k, d){ try{ const v = localStorage.getItem('p_'+DATA.id+'_'+k); return v===null?d:JSON.parse(v);}catch(e){return d;} },
     set(k, v){ try{ localStorage.setItem('p_'+DATA.id+'_'+k, JSON.stringify(v)); }catch(e){} }
   };
 
+  // ---------- a pianist's performance (only some songs) ----------
+  // Loudness of every note, the sustain pedal and - if switched on - the pianist's tempo flexibility (rubato)
+  // come from a real recorded performance aligned to the score. The rubato is scaled so the whole piece keeps
+  // the score's length: the speed slider means the same thing with or without it.
+  const PERF = DATA.perf || null;
+  const T0 = DATA.notes.map(a => a[0]);                     // score times: fingering edits are keyed by these
+  const rubato = !!(PERF && PERF.tempo && PERF.tempo.length > 1) && store.get('rubato', true);
+  if(PERF){
+    if(!(MARKS.pedal || []).length) MARKS.pedal = PERF.pedal.map(x => x.slice());   // show where the pianist pedals
+    $('rubatoRow').hidden = false; $('rubato').checked = rubato;
+    $('rubatoLabel').textContent = `ピアニスト（${PERF.performer}）のテンポの揺れをつける`;
+    $('rubato').onchange = () => { store.set('rubato', $('rubato').checked); location.reload(); };
+    $('songCredit').innerHTML += ` 強弱・ペダル${rubato ? '・テンポの揺れ' : ''}：${esc(PERF.performer)} の演奏記録（${esc(PERF.source)}、${esc(PERF.license)}）。`;
+  }
+  const PERF_PED = PERF ? PERF.pedal.map(x => x.slice()) : null;
+  if(rubato){
+    const M = PERF.tempo, s0 = M[0][0], p0 = M[0][1], sN = M[M.length-1][0], pN = M[M.length-1][1], k = (sN - s0)/(pN - p0);
+    const W = t => {
+      if(t <= s0) return t;
+      if(t >= sN) return sN + (t - sN);
+      let lo = 0, hi = M.length - 1;
+      while(hi - lo > 1){ const m = (lo+hi)>>1; if(M[m][0] <= t) lo = m; else hi = m; }
+      const [a0, b0] = M[lo], [a1, b1] = M[hi];
+      return Math.round(s0 + (b0 + (b1 - b0)*(t - a0)/(a1 - a0) - p0) * k);
+    };
+    for(const a of DATA.notes){ const e = W(a[0] + a[1]); a[0] = W(a[0]); a[1] = Math.max(1, e - a[0]); }
+    for(const m of DATA.measures) m[0] = W(m[0]);
+    for(const m of MARKS.marks){ m.t = W(m.t); if(m.end) m.end = W(m.end); }
+    for(const sp of MARKS.pedal){ sp[0] = W(sp[0]); sp[1] = W(sp[1]); }
+    if(PERF_PED) for(const sp of PERF_PED){ sp[0] = W(sp[0]); sp[1] = W(sp[1]); }
+  }
+
   // ---------- data ----------
   const LAYOUT = [0,.5,1,1.5,2,3,3.5,4,4.5,5,5.5,6];
   const isBlack = p => [1,3,6,8,10].includes(p%12);
   const wu = p => Math.floor(p/12)*7 + LAYOUT[p%12];       // white-key units
   const KANA = ['ド','レ♭','レ','ミ♭','ミ','ファ','ソ♭','ソ','ラ♭','ラ','シ♭','シ'];
-  const notes = DATA.notes.map((a,i) => ({i, t:a[0], d:Math.max(a[1],60), p:a[2], h:a[3]?'R':'L', f:a[4], m:a[5], g:a[6], tr:a[7], pos:a[8], o:a[9]||0, u:wu(a[2])}));
-  const keyOf = n => `${n.t}:${n.p}:${n.h}`;
+  const notes = DATA.notes.map((a,i) => ({i, t:a[0], t0:T0[i], pv:a[10]||0, d:Math.max(a[1],60), p:a[2], h:a[3]?'R':'L', f:a[4], m:a[5], g:a[6], tr:a[7], pos:a[8], o:a[9]||0, u:wu(a[2])}));
+  const keyOf = n => `${n.t0}:${n.p}:${n.h}`;
   const localEdits = store.get('edits', {});
   for(const k of Object.keys(localEdits)) if(SERVER_EDITS[k] === localEdits[k]) delete localEdits[k];
   store.set('edits', localEdits);
@@ -364,6 +402,7 @@ function startPlayer(DATA, SERVER_EDITS){
       glue.connect(comp); outNode = comp; comp.connect(ac.destination);
       master = ac.createGain(); master.gain.value = .6; master.connect(glue);
       IR = makeIR(1.8);
+      loadRooms();
       loadSamples();
     }catch(e){ ac = null; }
   }
@@ -372,6 +411,19 @@ function startPlayer(DATA, SERVER_EDITS){
     if(ac.state === 'suspended') ac.resume();
     // keep the page "playing media" with a silent looping <audio> so the phone does not suspend it with the screen off
     if(!bgAudio){ try{ bgAudio = new Audio(SILENCE); bgAudio.loop = true; bgAudio.volume = .01; bgAudio.setAttribute('playsinline', ''); bgAudio.play().catch(() => {}); }catch(e){ bgAudio = null; } }
+  }
+  // the concert hall (a measured impulse response) and the strings that ring along while the pedal is down
+  let HALL = null, STRINGS = null, STR_GAIN = 0, HALL_MAX = .4;
+  async function loadRooms(){
+    try{
+      const j = await (await fetch('assets/ir/index.json')).json();
+      const get = async f => await ac.decodeAudioData(await (await fetch('assets/ir/' + f)).arrayBuffer());
+      const [h, st] = await Promise.all([get(j.hall.file), get(j.strings.file)]);
+      // cut the direct sound out of the hall response: the piano itself is already in the dry signal
+      const cut = Math.round(h.sampleRate * j.hall.direct_ms / 1000), ramp = Math.round(h.sampleRate * .0015);
+      for(let c=0; c<h.numberOfChannels; c++){ const d = h.getChannelData(c); for(let i=0; i<cut+ramp && i<d.length; i++) d[i] *= i < cut ? 0 : (i - cut)/ramp; }
+      HALL = h; HALL_MAX = j.hall.wet_max || .4; STRINGS = st; STR_GAIN = j.strings.gain;
+    }catch(e){}
   }
   async function loadSamples(){
     if(loading || !ac) return; loading = true;
@@ -392,7 +444,7 @@ function startPlayer(DATA, SERVER_EDITS){
     show();
   }
   // when each note's sound stops: at its written end, or later while the pedal is down
-  const PED = (MARKS.pedal || []);
+  const PED = PERF_PED || MARKS.pedal || [];               // the pianist's pedal when we have it
   const bassChanges = [];
   { const lh = notes.filter(n => n.h==='L').sort((a,b) => a.t-b.t || a.p-b.p); let last = -1;
     for(const n of lh){ if(n.t === last) continue; const lower = lh.some(m => m !== n && m.t < n.t && m.t + m.d > n.t && m.p < n.p); if(!lower){ bassChanges.push(n.t); last = n.t; } } }
@@ -402,6 +454,8 @@ function startPlayer(DATA, SERVER_EDITS){
     if(PED.length){ const sp = PED.find(([a,b]) => a <= end && end < b); n.rel = sp ? sp[1] : end; }
     else n.rel = Math.min(Math.max(end, nextChange(end - 1)), end + 4000);   // no marks: change pedal with the bass
   }
+  // when the dampers are up (for the strings' sympathetic resonance)
+  const PED_DOWN = PED.length ? PED : bassChanges.map((t, i) => [t + 40, bassChanges[i+1] ?? t + 4000]);
   const voices = [];
   // loudness of a recording (first 0.4 s), so every layer and key can be brought to the same level and
   // the layers differ in tone colour only - loudness itself comes from the musical dynamics below
@@ -484,7 +538,7 @@ function startPlayer(DATA, SERVER_EDITS){
     });
   }
   const playNote = n => noteOn(n);
-  window.__piano = { get ac(){ return ac; }, get master(){ return master; }, levelAt: t => levelAt(t), notes, get pos(){ return pos; }, get voices(){ return voices.length; }, get out(){ return outNode; } };   // for testing
+  window.__piano = { get ac(){ return ac; }, get master(){ return master; }, levelAt: t => levelAt(t), notes, get pos(){ return pos; }, get voices(){ return voices.length; }, get out(){ return outNode; }, get late(){ return lateLog; } };   // for testing
   // ---------- musical dynamics ----------
   // A continuous loudness line built from the marks: a hairpin moves from the CURRENT level toward the
   // next written dynamic (or about one step if none follows), and the level stays where it arrived.
@@ -555,6 +609,16 @@ function startPlayer(DATA, SERVER_EDITS){
       v += (rnd(n.i) - .5) * .05;                                 // no two touches exactly alike
       n.vel = Math.max(.1, Math.min(1, v));
       n.jit = higher || lower ? (rnd(n.i+7) - .5) * .012 : 0;   // chords not perfectly vertical
+    }
+    if(PERF){
+      // the pianist's own touch (recorded key velocity 1-127; about 45 = p, 75 = f on these recordings' piano)
+      const pvVel = pv => Math.max(.08, Math.min(1, .4 + (pv - 45) * .0095));
+      const played = notes.filter(n => n.pv);
+      for(const n of played) n.vel = pvVel(n.pv);
+      for(const n of notes) if(!n.pv){            // a note the alignment missed: like its neighbours in the same hand
+        const near = played.filter(m => m.h===n.h && Math.abs(m.t - n.t) < 400);
+        if(near.length) n.vel = near.reduce((a, m) => a + m.vel, 0) / near.length - .03;
+      }
     }
   }
   const dynVel = t => levelAt(t);
@@ -834,6 +898,9 @@ function startPlayer(DATA, SERVER_EDITS){
   const fmt = ms => { const s = Math.floor(ms/1000/speed); return Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); };
   function setSpeed(v){ if(playing && mode==='play' && !gapTimer){ pos = Math.max(anchorPos, anchorPos + (clock() - anchorT)*1000*speed); speed = v; anchor(.1); } speed = v; $('speed').value = v; $('speedVal').textContent = Math.round(v*100)+'%'; store.set('speed', v); $('tDur').textContent = fmt(END); }
   $('speed').oninput = e => setSpeed(+e.target.value);
+  { const h = store.get('hall', .6); $('hall').value = h; $('hallVal').textContent = Math.round(h*100) + '%'; }
+  $('hall').oninput = e => { $('hallVal').textContent = Math.round(e.target.value*100) + '%'; store.set('hall', +e.target.value); };
+  $('hall').onchange = () => rerender();
   setSpeed(speed);
 
   document.querySelectorAll('[data-hand]').forEach(b => {
@@ -903,16 +970,19 @@ function startPlayer(DATA, SERVER_EDITS){
     gen++; rendering = false; stopChunks();
     anchorPos = pos; anchorT = clock() + (lead || 0); renderedTo = pos;
   }
+  // Two stages per chunk, so the piano itself is heard as soon as possible after a jump:
+  //  1. dry: the notes themselves (blended loudness layers, pedal, release noises)
+  //  2. space: from that mix, the strings ringing along while the pedal is down, and the concert hall.
+  //     It is ready a moment later; if it is late (only right after a jump) it joins in mid-way.
   async function renderChunk(t0, t1){
     const sr = ac.sampleRate, sp = 1000*speed, list = [];
     for(let i=firstIdxAfter(t0 - .001); i<notes.length && notes[i].t < t1; i++) list.push(notes[i]);
     if(!list.length) return null;
     let dur = 0;
     for(const n of list) dur = Math.max(dur, (n.t - t0)/sp + Math.min(12, (relOf(n) - n.t)/sp) + 1);
-    dur = Math.min(dur + (IR ? 1.9 : .1), 16);
+    dur = Math.min(dur + .1, 14);
     const oc = new OfflineAudioContext(2, Math.ceil(dur*sr), sr);
     const bus = oc.createGain(); bus.connect(oc.destination);
-    if(IR){ const cv = oc.createConvolver(); cv.buffer = IR; const wet = oc.createGain(); wet.gain.value = .18; bus.connect(cv); cv.connect(wet); wet.connect(oc.destination); }
     for(const n of list){
       const [parts, k] = layersBlend(n.p, n.vel);
       if(!parts.length) continue;
@@ -933,6 +1003,49 @@ function startPlayer(DATA, SERVER_EDITS){
     }
     return await oc.startRendering();
   }
+  async function renderSpace(dry, t0){
+    const hall = +$('hall').value, room = hall > 0 ? (HALL || IR) : null, sp = 1000*speed;
+    const spans = STRINGS ? PED_DOWN.filter(([a,b]) => b > t0 && a < t0 + dry.duration*sp) : [];
+    if(!room && !spans.length) return null;
+    const sr = dry.sampleRate, dur = dry.duration + Math.max(room ? room.duration : 0, spans.length ? STRINGS.duration : 0);
+    const oc = new OfflineAudioContext(2, Math.ceil(dur*sr), sr);
+    const src = oc.createBufferSource(); src.buffer = dry; src.start(0);
+    const toHall = oc.createGain(); src.connect(toHall);
+    if(spans.length){
+      // sympathetic resonance: while the dampers are up every string rings along a little. The strings are
+      // excited only while free (input gate) and fall silent when the dampers come down (output gate).
+      const inG = oc.createGain(), cv = oc.createConvolver(), outG = oc.createGain();
+      cv.normalize = false; cv.buffer = STRINGS;
+      src.connect(inG); inG.connect(cv); cv.connect(outG); outG.connect(oc.destination); outG.connect(toHall);
+      const on = spans.some(([a,b]) => a <= t0 && t0 < b);
+      for(const [gp, up, downTC] of [[inG.gain, STR_GAIN, .02], [outG.gain, 1, .08]]){
+        gp.setValueAtTime(on ? up : 0, 0);
+        for(const [a,b] of spans){
+          const la = (a - t0)/sp, lb = (b - t0)/sp;
+          if(la > 0) gp.setTargetAtTime(up, la, .03);
+          if(lb > 0) gp.setTargetAtTime(0, lb, downTC);
+        }
+      }
+    }
+    if(room){
+      const cv = oc.createConvolver(), wet = oc.createGain();
+      if(HALL){ cv.normalize = false; wet.gain.value = HALL_MAX * hall; } else wet.gain.value = .3 * hall;
+      cv.buffer = room; toHall.connect(cv); cv.connect(wet); wet.connect(oc.destination);
+    }
+    return await oc.startRendering();
+  }
+  const lateLog = [];
+  function playChunk(buf, t0, space){
+    const s = ac.createBufferSource(), g = ac.createGain(); s.buffer = buf; s.connect(g); g.connect(master);
+    const when = whenFor(t0), now = ac.currentTime;
+    if(lateLog.length < 200) lateLog.push([space ? 'space' : 'dry', Math.round((now - when)*1000)]);
+    if(when >= now) s.start(when);
+    else if(now - when < buf.duration){
+      s.start(now, now - when);
+      if(space){ g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(1, now + .15); }   // joins in softly
+    } else return;
+    const c = {s, g}; chunks.push(c); s.onended = () => { const i = chunks.indexOf(c); if(i >= 0) chunks.splice(i, 1); };
+  }
   function pump(){
     if(rendering || !ac || !v2Ready || !playing || mode!=='play' || !$('sound').checked) return;
     const limit = $('loopOn').checked ? loopEndT() : END;
@@ -945,10 +1058,8 @@ function startPlayer(DATA, SERVER_EDITS){
       if(my !== gen) return;
       rendering = false; renderedTo = t1;
       if(buf){
-        const s = ac.createBufferSource(), g = ac.createGain(); s.buffer = buf; s.connect(g); g.connect(master);
-        const when = whenFor(t0), now = ac.currentTime;
-        if(when >= now) s.start(when); else if(now - when < buf.duration) s.start(now, now - when);
-        const c = {s, g}; chunks.push(c); s.onended = () => { const i = chunks.indexOf(c); if(i >= 0) chunks.splice(i, 1); };
+        playChunk(buf, t0);
+        renderSpace(buf, t0).then(w => { if(w && my === gen) playChunk(w, t0, true); }).catch(() => {});
       }
       pump();
     }).catch(() => { if(my === gen) rendering = false; });
