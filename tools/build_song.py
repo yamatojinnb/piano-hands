@@ -97,6 +97,12 @@ def spine_maps(lines):
 # ---------------------------------------------------------------- build
 def build(song):
     kern = fetch_kern(song)
+    if song.get("kern_patch"):          # small fixes to the score file, e.g. a missing tempo change (line count kept)
+        text = open(kern, encoding="utf-8").read()
+        for old, new in song["kern_patch"]:
+            assert text.count(old) >= 1, old
+            text = text.replace(old, new, 1)
+        kern = kern[:-4] + ".patched.krn"; open(kern, "w", encoding="utf-8").write(text)
     lines = open(kern, encoding="utf-8").read().split("\n")
     fmap = spine_maps(lines)
     tk = verovio.toolkit(); tk.loadFile(kern)

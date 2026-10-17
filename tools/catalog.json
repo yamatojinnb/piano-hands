@@ -68,5 +68,33 @@
    "Adagio sostenuto"
   ],
   "speed": 0.7
+ },
+ {
+  "id": "kogarashi",
+  "title": "木枯らしのエチュード",
+  "composer": "ショパン",
+  "work": "練習曲 イ短調 Op.25-11",
+  "level": "上級",
+  "kern_repo": "pl-wnifc/humdrum-chopin-first-editions",
+  "kern_path": "kern/025_7-12-1a-BH-011.krn",
+  "source_name": "Fryderyk Chopin Institute「Chopin First Editions」Breitkopf & Härtel 初版",
+  "source_url": "https://github.com/pl-wnifc/humdrum-chopin-first-editions",
+  "license": "CC BY 4.0",
+  "tempo_text": [
+   "はじめ4小節はゆっくり、そのあと速く力強く",
+   "Lento – Allegro con brio"
+  ],
+  "speed": 0.2,
+  "kern_patch": [
+   [
+    "*MM138\t*\t*MM138\t*\t*",
+    "*MM56\t*\t*MM56\t*\t*"
+   ],
+   [
+    "!!LO:LB:g=original\n=5|!",
+    "*MM138\t*\t*MM138\t*\t*\n=5|!"
+   ]
+  ],
+  "perf": "tools/perf/kogarashi.json"
  }
 ]

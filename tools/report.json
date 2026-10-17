@@ -319,5 +319,60 @@
   "seconds": 302,
   "edition_fingers": 0,
   "my_fingers": 0
+ },
+ "kogarashi": {
+  "chord_fixed": 9,
+  "same_finger_repaired": 8,
+  "check_same_finger_step": 4,
+  "check_thumb_on_black_fast": 88,
+  "check_odd_crossing": 3,
+  "engine": "hmm2",
+  "hand_moves": [
+   [
+    4,
+    "下の段の内声を右手に"
+   ]
+  ],
+  "hand_marked": [],
+  "reach_semitones": 14,
+  "hand_audit": [
+   [
+    36,
+    "左手が手の届く幅を超えて同時に押す"
+   ],
+   [
+    46,
+    "左手が手の届く幅を超えて同時に押す"
+   ],
+   [
+    57,
+    "左手が右手より上"
+   ],
+   [
+    58,
+    "左手が右手より上"
+   ],
+   [
+    62,
+    "左手が右手より上"
+   ],
+   [
+    64,
+    "左手が右手より上"
+   ],
+   [
+    81,
+    "左手が手の届く幅を超えて同時に押す"
+   ],
+   [
+    82,
+    "左手が手の届く幅を超えて同時に押す"
+   ]
+  ],
+  "notes": 3171,
+  "measures": 96,
+  "seconds": 179,
+  "edition_fingers": 122,
+  "my_fingers": 0
  }
 }

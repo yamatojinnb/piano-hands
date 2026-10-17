@@ -31,7 +31,7 @@ SONGS_DIR = '/home/claude/piano-hands/songs'
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # default beats per measure in the app scores (for beat-level tempo maps in dtw mode)
-APP_BEATS = {'koinu': 3, 'kakumei': 4, 'hisou2': 2, 'gekkou1': 4}
+APP_BEATS = {'koinu': 3, 'kakumei': 4, 'hisou2': 2, 'gekkou1': 4, 'kogarashi': 4}
 
 # ---------------------------------------------------------------- loading
 
