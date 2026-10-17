@@ -825,8 +825,9 @@ function startPlayer(DATA, SERVER_EDITS){
   const loopEndT = () => { const k = +selB.value; return k+1 < measures.length ? measures[k+1].t : END; };
   const fixLoop = () => { if(+selB.value < +selA.value) selB.value = selA.value; store.set('loopA', +selA.value); store.set('loopB', +selB.value); };
   selA.onchange = () => { fixLoop(); if($('loopOn').checked) jumpTo(measures[+selA.value].t); };
-  selB.onchange = fixLoop;
-  $('loopOn').onchange = () => { if($('loopOn').checked) jumpTo(measures[+selA.value].t); };
+  selB.onchange = () => { fixLoop(); rerender(); };
+  $('sound').addEventListener('change', () => rerender());
+  $('loopOn').onchange = () => { if($('loopOn').checked) jumpTo(measures[+selA.value].t); else rerender(); };
   let gap = 2; $('gap').oninput = e => { gap = +e.target.value; $('gapVal').textContent = gap.toFixed(1)+'秒'; };
 
   // ---------- controls ----------
@@ -837,7 +838,7 @@ function startPlayer(DATA, SERVER_EDITS){
 
   document.querySelectorAll('[data-hand]').forEach(b => {
     b.classList.toggle('on', b.dataset.hand===hand);
-    b.onclick = () => { hand = b.dataset.hand; store.set('hand', hand); document.querySelectorAll('[data-hand]').forEach(x => x.classList.toggle('on', x===b)); onsets = onsetsFor(); if(mode==='step') snapStep(0); };
+    b.onclick = () => { hand = b.dataset.hand; store.set('hand', hand); document.querySelectorAll('[data-hand]').forEach(x => x.classList.toggle('on', x===b)); onsets = onsetsFor(); if(mode==='step') snapStep(0); rerender(); };
   });
 
   function setMode(m){
@@ -953,6 +954,13 @@ function startPlayer(DATA, SERVER_EDITS){
     }).catch(() => { if(my === gen) rendering = false; });
   }
   function cancelFuture(){ stopChunks(); gen++; rendering = false; }
+  // a setting that changes the sound (hand, sound on/off, loop range) was changed while playing:
+  // throw away what was already mixed ahead and mix again from here
+  function rerender(){
+    if(!playing || mode!=='play' || gapTimer) return;
+    pos = Math.max(anchorPos, anchorPos + (clock() - anchorT)*1000*speed);
+    anchor(.05);
+  }
 
   function tick(){
     if(mode!=='play' || !playing) return;
