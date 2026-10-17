@@ -1,5 +1,9 @@
 # 公開するのはアプリ本体・曲データ・ピアノの音だけ（ツールや説明書は含めない）
 [build]
+  # 無料プランは本番デプロイ1回で15クレジット（月300＝20回まで）を使い、上限を超えるとチーム全体のサイトが止まる。
+  # push のたびに自動デプロイしないよう、コミットメッセージに [netlify] を含むときだけデプロイする。
+  # （ignore が 0 で終わるとビルドを取りやめる。取りやめたビルドはクレジットを使わない）
+  ignore = "git log -1 --pretty=%B | grep -q '\\[netlify\\]' && exit 1 || exit 0"
   command = "rm -rf _site && mkdir _site && cp -r index.html songs assets _site/"
   publish = "_site"
 
