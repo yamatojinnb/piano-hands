@@ -39,6 +39,13 @@ def is_black(p): return p % 12 in (1, 3, 6, 8, 10)
 
 # ---------------------------------------------------------------- sources
 def fetch_kern(song):
+    if song.get("ly"):                  # a LilyPond source kept in this repository -> kern (tools/lily2kern.py)
+        src = os.path.join(ROOT, song["ly"]); out = os.path.join(CACHE, song["id"] + ".from-ly.krn")
+        if not os.path.exists(out) or os.path.getmtime(out) < os.path.getmtime(src):
+            os.makedirs(CACHE, exist_ok=True)
+            subprocess.run([sys.executable, os.path.join(ROOT, "tools", "lily2kern.py"), src, out]
+                           + (["--mm", str(song["mm"])] if song.get("mm") else []), check=True)
+        return out
     repo, path = song["kern_repo"], song["kern_path"]
     d = os.path.join(CACHE, repo.replace("/", "__"))
     if not os.path.isdir(d):
@@ -81,6 +88,16 @@ def spine_maps(lines):
         if cur is None: continue
         fmap[i] = list(cur)
         toks = ln.split("\t")
+        # several **kern spines per staff (scores converted from LilyPond): the hand follows *staffN,
+        # the lowest staff (largest N) is the left hand
+        nums = {j: int(t[6:]) for j, t in enumerate(toks) if re.fullmatch(r"\*staff\d+", t) and j < len(cur) and cur[j][0] in "LR"}
+        if len(set(nums.values())) > 1:
+            mx, last, new = max(nums.values()), None, []
+            for j, c in enumerate(cur):
+                if j in nums: last = "L" if nums[j] == mx else "R"; new.append((last, c[1]))
+                elif c[0] in ("FL", "FR") and last: new.append(("F" + last, c[1]))
+                else: new.append(c)
+            cur = new; fmap[i] = list(cur)
         if ln.startswith("*") and ("*^" in toks or "*v" in toks):
             new, j = [], 0
             while j < len(toks):
