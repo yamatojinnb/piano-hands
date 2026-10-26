@@ -328,7 +328,7 @@ function startPlayer(DATA, SERVER_EDITS){
   const seen = {};
   measures.forEach(ms => { seen[ms.m] = (seen[ms.m]||0)+1; ms.pass = seen[ms.m]; });
   const measureIndexAt = t => { let k = 0; for(let i=0;i<measures.length;i++){ if(measures[i].t <= t+1) k = i; else break; } return k; };
-  const mLabel = ms => ms.m + '小節' + (ms.pass>1 ? '（くり返し）' : '');
+  const mLabel = ms => (ms.m === 0 ? '曲の頭（弱起）' : ms.m + '小節') + (ms.pass>1 ? '（くり返し）' : '');
 
   // per-hand poses (finger positions after each onset)
   const poses = {L:[], R:[]};

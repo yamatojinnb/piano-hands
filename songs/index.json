@@ -48,5 +48,15 @@
   "measures": 96,
   "notes": 3171,
   "edition_fingers": 122
+ },
+ {
+  "id": "scriabin812",
+  "title": "スクリャービン 練習曲 Op.8-12",
+  "composer": "スクリャービン",
+  "work": "12の練習曲 Op.8 第12番 嬰ニ短調",
+  "level": "上級",
+  "measures": 56,
+  "notes": 2365,
+  "edition_fingers": 14
  }
 ]

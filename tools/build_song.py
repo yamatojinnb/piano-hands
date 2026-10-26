@@ -126,6 +126,12 @@ def build(song):
     tm = tk.renderToTimemap({"includeMeasures": True})
 
     measure_at_line = {i: int(m[1]) for i, ln in enumerate(lines, 1) if (m := re.match(r"^=(\d+)", ln))}
+    # verovio names the first measure after line 1. Its number: the barline written before the first notes,
+    # or, for a pickup with its "=0"/no barline in front, one less than the next barline
+    first_data = next((i for i, ln in enumerate(lines, 1) if ln and ln[0] not in "*!=" ), 1)
+    before = [n for i, n in measure_at_line.items() if i < first_data]
+    after = [n for i, n in sorted(measure_at_line.items()) if i > first_data]
+    measure_at_line.setdefault(1, before[-1] if before else (after[0] - 1 if after else 1))
     on_time, off_time, meas = {}, {}, []
     for e in tm:
         t = e["tstamp"]
@@ -182,7 +188,9 @@ def build(song):
         notes.append(n)
 
     marked = apply_hand_markings(lines, notes)
-    hand_moves = separate_hands(notes, meas)
+    # "staff_is_hand": every note is played by the hand of its staff (wide leaps / rolled chords such as
+    # Scriabin Op.8-12, where moving a note to the other hand would only make it harder)
+    hand_moves = [] if song.get("staff_is_hand") else separate_hands(notes, meas)
     # your own corrections act as fixed anchors
     fixp = os.path.join(ROOT, "songs", "fix", song["id"] + ".json")
     fixes = json.load(open(fixp, encoding="utf-8")).get("edits", {}) if os.path.exists(fixp) else {}
@@ -624,19 +632,24 @@ def extract_marks(song, lines, tm):
         for j, sp in enumerate(spines):
             if sp == "**kern" and j < len(toks) and "TT" in toks[j] and "]" not in toks[j] and "_" not in toks[j]:
                 for t in passes(L): ev.append(dict(t=t, kind="trill", jp="トリル（隣の音とすばやく交互に）", it="tr"))
-        d = next((toks[j] for j, sp in enumerate(spines) if sp == "**dynam" and j < len(toks) and toks[j] not in (".", "")), None)
-        if not d: continue
-        if d in DYN:
-            for t in passes(L): ev.append(dict(t=t, kind="dyn", jp=DYN[d][0], it=DYN[d][1]))
-        elif d in ("<", ">"): hair = (d, passes(L))
-        elif d in ("[", "]", "[[", "]]") and hair:
+        dd = next((toks[j] for j, sp in enumerate(spines) if sp == "**dynam" and j < len(toks) and toks[j] not in (".", "")), None)
+        if not dd: continue
+        def close_hair():
             ends = passes(L)
             for i, t0 in enumerate(hair[1]):
                 t1 = ends[i] if i < len(ends) else t0 + 1100
                 if t1 - t0 >= 600:   # shorter wedges are per-note swells, too noisy to label
                     ev.append(dict(t=t0, end=t1, kind="hairpin", jp="だんだん強く" if hair[0] == "<" else "だんだん弱く",
                                    it="cresc." if hair[0] == "<" else "dim."))
-            hair = None
+        for d in dd.split(" "):     # several marks at one moment are space-separated
+            if d in DYN:
+                if hair: close_hair(); hair = None   # a new loudness ends a running hairpin
+                for t in passes(L): ev.append(dict(t=t, kind="dyn", jp=DYN[d][0], it=DYN[d][1]))
+            elif d in ("<", ">"):
+                if hair: close_hair()
+                hair = (d, passes(L))
+            elif d in ("[", "]", "[[", "]]") and hair:
+                close_hair(); hair = None
     ev.append(dict(t=0, kind="text", jp=song["tempo_text"][0], it=song["tempo_text"][1]))
     ped, cur = [], None
     for e in sorted([e for e in ev if e["kind"] == "ped"], key=lambda e: (e["t"], e["v"])):

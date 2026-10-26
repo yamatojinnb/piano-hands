@@ -79,6 +79,9 @@
 
 ## 曲を追加する（Claude Code に頼む場合）
 
+楽譜データは Humdrum（**kern）のほか、LilyPond のファイルも使える（`tools/catalog.json` の `"ly"` に置き場所を書く。`pip install lilypond` が必要）。`"staff_is_hand": true` にすると、上の段＝右手・下の段＝左手のまま振り分けない。
+
+
 `tools/catalog.json` に1曲分を足して、次を実行します。
 
 ```
@@ -95,4 +98,5 @@ python tools/build_song.py <曲ID>
 - ピアノの音：Salamander Grand Piano（Alexander Holm、CC BY 3.0）、npm パッケージ @audio-samples/piano-mp3-velocity8 を短く切って使用
 - ホールの響き：David Ackermann, Audio Communication Group, Technical University of Berlin, Berliner Philharmonie BRIR（CC BY-NC-SA 4.0） http://dx.doi.org/10.14279/depositonce-15774 。直接音の前の無音を削り、音量をそろえて使用（`assets/ir/LICENSE.txt`）
 - ピアニストの演奏記録：ASAP / (n)ASAP dataset（MAESTRO・e-Piano Competition 由来、CC BY-NC-SA 4.0） https://github.com/CPJKU/asap-dataset 。楽譜の時間に合わせ、1音ずつの強さ・ペダル・テンポの変化だけを取り出して使用
+- スクリャービン Op.8-12：Knute Snortum による LilyPond 版（CC BY-SA 4.0、IMSLP #887488、`tools/scores/scriabin-op8/`）。`tools/lily2kern.py` で変換。この曲の音符データ（`songs/scriabin812.json`）も CC BY-SA 4.0
 - 自動運指：Eita Nakamura, Yasuyuki Saito, Kazuyoshi Yoshii, "Statistical Learning and Estimation of Piano Fingering", Information Sciences 517 (2020)。プログラム https://github.com/statpianofingering/statpianofingering.github.io （予備として PianoPlayer https://github.com/marcomusy/pianoplayer ）

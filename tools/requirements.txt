@@ -1,2 +1,3 @@
 verovio==6.3.0
 pianoplayer==3.0.2
+lilypond==2.25.12   # only for songs whose score is a LilyPond file (tools/lily2kern.py)

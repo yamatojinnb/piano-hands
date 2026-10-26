@@ -96,5 +96,22 @@
    ]
   ],
   "perf": "tools/perf/kogarashi.json"
+ },
+ {
+  "id": "scriabin812",
+  "title": "スクリャービン 練習曲 Op.8-12",
+  "composer": "スクリャービン",
+  "work": "12の練習曲 Op.8 第12番 嬰ニ短調",
+  "level": "上級",
+  "ly": "tools/scores/scriabin-op8/app-op8-no12.ly",
+  "source_name": "Knute Snortum「Scriabin Twelve Etudes, Op.8」LilyPond 版（IMSLP #887488）",
+  "source_url": "https://imslp.org/wiki/12_Etudes,_Op.8_(Scriabin,_Aleksandr)",
+  "license": "CC BY-SA 4.0",
+  "tempo_text": [
+   "悲壮に、情熱的に",
+   "Patetico"
+  ],
+  "speed": 0.3,
+  "staff_is_hand": true
  }
 ]
